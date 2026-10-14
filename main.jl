@@ -562,6 +562,7 @@ function update_master_Benders(Data, m_master, z, zstar, y, oracle_dict, cuts_Be
     Pmin = Data.Pmin
     Pmax = Data.Pmax
     number_of_generators = Data.Ig
+    D = Data.D
 
     # Ignitial state
     p0 = zeros(number_of_generators)
@@ -632,7 +633,7 @@ function update_master_Benders(Data, m_master, z, zstar, y, oracle_dict, cuts_Be
             push!(cuts_Benders["$n"]["π"], round.(values(π); digits = 8))
             push!(cuts_Benders["$n"]["π_s"], round.(values(π_s); digits = 8))
             push!(cuts_Benders["$n"]["y_opt"], vcat(y_opt...))
-            push!(cuts_Benders["$n"]["const"], γ - sum(π["($b, $t)"]*maximum([PredictionStar[ind_renewable_generation[b]][t] + y_opt[ind_renewable_generation[b]][t], 0.0]) + π_s["($b, $t)"]*maximum([PredictionStar[ind_renewable_generation[b]][t] + y_opt[ind_renewable_generation[b]][t], 0.0]) for b ∈ bus_renewable_generation, t ∈ T))
+            push!(cuts_Benders["$n"]["const"], γ - sum(π["($b, $t)"]*(D[b][t] - maximum([PredictionStar[ind_renewable_generation[b]][t] + y_opt[ind_renewable_generation[b]][t], 0.0])) + π_s["($b, $t)"]*maximum([PredictionStar[ind_renewable_generation[b]][t] + y_opt[ind_renewable_generation[b]][t], 0.0]) for b ∈ bus_renewable_generation, t ∈ T))
 
             cut = @constraint(m_master, ex - δ*m_master[:λ] + γ ≤ m_master[:μ][n] + m_master[:θ])
             push!(cuts["$n"], cut)
@@ -904,7 +905,7 @@ function dual_vertices(Data, u, v, w, y_opt, PredictionStar, oracle_dict, n)
     end
 
 
-    oracle_dict["const"]["n"] = objective_value(m_oracle) - (const_term_x1 + const_term_x2 + const_term_x3 + const_term_x4 + const_term_x5 + const_term_x6)
+    oracle_dict["const"]["$n"] = objective_value(m_oracle) - (const_term_x1 + const_term_x2 + const_term_x3 + const_term_x4 + const_term_x5 + const_term_x6)
 
     return nothing
 end
@@ -1197,8 +1198,7 @@ function warm_start_solution_Benders(Data, z, zstar, y, Ξ_y, PredictionStar, Pr
 
     m_master_warm = create_master_problem(Data, ρ)
 
-    # initilization_restricted_master_Benders(Data, m_master_warm, z, zstar, y, Ξ_y, PredictionStar, α)
-    initilization_restricted_master_Benders_degenerative(Data, m_master_warm, z, zstar, y, Ξ_y, PredictionStar, α)
+    initilization_restricted_master_Benders(Data, m_master_warm, z, zstar, y, Ξ_y, PredictionStar, α)
 
 
     N = Data.N
@@ -1255,11 +1255,11 @@ function warm_start_solution_Benders(Data, z, zstar, y, Ξ_y, PredictionStar, Pr
 
             δ = signature[7]
             δ += norm(vcat(zstar...) - z[n], 1)
-            # γ = cuts_Benders["$n"]["const"][i] # corrected to include the constant term from the cuts_Benders dictionary
+            γ = cuts_Benders["$n"]["const"][i] # corrected to include the constant term from the cuts_Benders dictionary
             yopt = cuts_Benders["$n"]["y_opt"][i]
             y_opt = @views [yopt[((b - 1) * Tf + 1):(b * Tf)] for b in 1:length(bus_renewable_generation)]
 
-            γ = cuts_Benders["$n"]["const"][i] - 2*sum(π["($b, $t)"]*maximum([PredictionStar[ind_renewable_generation[b]][t] + y_opt[ind_renewable_generation[b]][t], 0.0])  for b ∈ bus_renewable_generation, t ∈ T)
+            # γ = cuts_Benders["$n"]["const"][i] - 2*sum(π["($b, $t)"]*maximum([PredictionStar[ind_renewable_generation[b]][t] + y_opt[ind_renewable_generation[b]][t], 0.0])  for b ∈ bus_renewable_generation, t ∈ T)
             γ += sum(π["($b, $t)"]*maximum([PredictionStar_new[ind_renewable_generation[b]][t] + y_opt[ind_renewable_generation[b]][t], 0.0]) + π_s["($b, $t)"]*maximum([PredictionStar_new[ind_renewable_generation[b]][t] + y_opt[ind_renewable_generation[b]][t], 0.0]) for b ∈ bus_renewable_generation, t ∈ T)
             γ = signature[8]
 
@@ -1520,8 +1520,8 @@ function CCG_algorithm(Data, errors, Ξ_y, zstar, PredictionStar, ρ, α)
         convergence = solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y, u_CCG, v_CCG, w_CCG, λ_CCG, μ_CCG, θ_CCG, oracle_dict, zstar, PredictionStar)
         update_master_CCG(Data, m_master, oracle_dict, zstar, y, PredictionStar, cuts_CCG)
         println("================================================")
-        println("                         CCG                    ")
-        println("                      Iter= $iter               ")
+        println("                                                         CCG                                                        ")
+        println("                                                     Iter= $iter                                                   ")
         println("================================================")
         iter +=  1
     end
@@ -1531,6 +1531,21 @@ function CCG_algorithm(Data, errors, Ξ_y, zstar, PredictionStar, ρ, α)
 end
 
 function Benders_algorithm(Data, Ξ_y, zstar, PredictionStar, ρ, α)
+
+    zstar = Data.zstar
+
+    Models, errors = scenarios(Data)
+
+    Ξ_y = uncertainty_support(Data, zstar, errors)
+
+    PredictionStar = forecast(Data, zstar, Models)
+
+
+    # Trimming parameters
+
+    α = 0.1
+    ρ = 1.1*critical_radius(Data, errors, Ξ_y, α, zstar) 
+
 
     N = Data.N
     z_aux = Data.z
@@ -1590,7 +1605,9 @@ function Benders_algorithm(Data, Ξ_y, zstar, PredictionStar, ρ, α)
     cumulative_time = 0.0
     UB_Benders = Inf
 
-    while ~convergence && iter ≤ Max_iter
+    gap = Inf
+
+    while ~convergence && iter ≤ Max_iter && gap ≥ 5e-2
 
         global u_Benders, v_Benders, w_Benders, λ_Benders, μ_Benders, θ_Benders, LB_Benders, time_master_Benders = solve_master_problem(m_master)
         convergence = solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y, u_Benders, v_Benders, w_Benders, λ_Benders, μ_Benders, θ_Benders, oracle_dict, zstar, PredictionStar)
@@ -1600,13 +1617,15 @@ function Benders_algorithm(Data, Ξ_y, zstar, PredictionStar, ρ, α)
         cumulative_time += time_master_Benders + total_time_oracle
         total_time = time_master_Benders + total_time_oracle
         println("================================================")
-        println("                       Bneders                  ")
+        println("                                     Benders  ")
         println("                      Iter= $iter               ")
         println("================================================")
         iter +=  1
         push!(LowerBound, LB_Benders)
         push!(UpperBound, UB_Benders)
         push!(Time,(time_master_Benders, total_time_oracle,total_time))
+
+        gap = (UB_Benders - LB_Benders)/UB_Benders
 
     end
 
@@ -1656,6 +1675,7 @@ function Benders_with_warm_start(Data, Ξ_y_new, zstar_new, PredictionStar, ρ_n
 
     PredictionStar_new = forecast(Data, zstar_new, Models)
 
+    ρ_new = 1.1*critical_radius(Data, errors, Ξ_y_new, α, zstar_new) 
 
     N = Data.N
     z_aux = Data.z
@@ -1699,6 +1719,67 @@ function Benders_with_warm_start(Data, Ξ_y_new, zstar_new, PredictionStar, ρ_n
     time_oracle = Dict("$n" => 0.0 for n ∈ sample)
 
 
+    oracle_dict_warm = Dict("y" => y_val, "π" => π, "π_s" => π_s, "x1" => x1, "x2" => x2, "x3" => x3, "x4" => x4, "x5" => x5, "x6" => x6, "const" => const_term, "time" => time_oracle, "ϑ" => zeros(N))
+    cuts_Benders_warm = Dict("$n" => Dict("signatures" => Set{Tuple{Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}},Float64,Float64}}(), "π" => Array{Array{Float64},1}(), "π_s" => Array{Array{Float64},1}(), "y_opt" => Array{Array{Float64},1}(), "const" => Array{Float64,1}()) for n in sample)
+
+    iter = 1
+
+    LowerBound_warm = []
+    UpperBound_warm = []
+    Time_warm = []
+    cuts_warm = Dict("$n" => [] for n ∈ sample)
+
+    m_master_warm = create_master_problem(Data, ρ_new)
+    initilization_restricted_master_Benders(Data, m_master_warm, z, zstar_new, y, Ξ_y_new, PredictionStar_new, α)
+    m_oracle, obj  = create_oracle_problem(Data)
+    convergence_warm = false
+    Max_iter = 250
+    cumulative_time_warm = 0.0
+    UB_Benders_warm = Inf
+    gap_warm =   Inf
+
+    while ~convergence_warm && iter ≤ Max_iter && gap_warm ≥ 1e-1
+
+        if iter == 1
+            global u_Benders_warm, v_Benders_warm, w_Benders_warm, λ_Benders_warm, μ_Benders_warm, θ_Benders_warm, LB_Benders_warm, time_master_Benders_warm = warm_start_solution_Benders(Data, z, zstar_new, y, Ξ_y_new, PredictionStar, PredictionStar_new, ρ_new, α, cuts_Benders)
+        else                                                                
+            global u_Benders_warm, v_Benders_warm, w_Benders_warm, λ_Benders_warm, μ_Benders_warm, θ_Benders_warm, LB_Benders_warm, time_master_Benders_warm = solve_master_problem(m_master_warm)
+        end
+        convergence_warm= solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y_new, u_Benders_warm, v_Benders_warm, w_Benders_warm, λ_Benders_warm, μ_Benders_warm, θ_Benders_warm, oracle_dict_warm, zstar_new, PredictionStar_new)
+        UB_Benders_warm = minimum([UB_Benders_warm, Upper_Bound(Data, u_Benders_warm, v_Benders_warm, w_Benders_warm, λ_Benders_warm, oracle_dict_warm["ϑ"], α)])
+        update_master_Benders(Data, m_master_warm, z, zstar_new, y, oracle_dict_warm, cuts_Benders_warm, cuts_warm)
+        total_time_oracle_warm = sum(oracle_dict_warm["time"]["$n"][end] for n ∈ sample)
+        cumulative_time_warm += time_master_Benders_warm + total_time_oracle_warm
+        total_time_warm = time_master_Benders_warm + total_time_oracle_warm
+        println("================================================")
+        println("                                                     Benders                                                      ")
+        println("                                                    Iter= $iter                                                    ")
+        println("================================================")
+        push!(LowerBound_warm, LB_Benders_warm)
+        push!(UpperBound_warm, UB_Benders_warm)
+        push!(Time_warm, (time_master_Benders_warm, total_time_oracle_warm, total_time_warm))
+
+        if iter > 1
+            gap_warm =( UB_Benders_warm - LB_Benders_warm)/UB_Benders_warm
+        end
+
+        iter +=  1
+
+    end
+
+    y_val = Dict("$n" => [zeros(Tf) for b ∈ collect(1:Tb_renewable)] for n ∈ sample)
+    π = Dict("$n" => Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T) for n ∈ sample)
+    π_s = Dict("$n" => Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T) for n ∈ sample)
+    x1 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T) for n ∈ sample)
+    x2 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T) for n ∈ sample)
+    x3 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T[2:end]) for n ∈ sample)
+    x4 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T[2:end]) for n ∈ sample)
+    x5 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in [1]) for n ∈ sample)
+    x6 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in [1]) for n ∈ sample)
+    const_term = Dict("$n" => 0.0 for n ∈ sample)
+    time_oracle = Dict("$n" => 0.0 for n ∈ sample)
+
+
     oracle_dict_new = Dict("y" => y_val, "π" => π, "π_s" => π_s, "x1" => x1, "x2" => x2, "x3" => x3, "x4" => x4, "x5" => x5, "x6" => x6, "const" => const_term, "time" => time_oracle, "ϑ" => zeros(N))
     cuts_Benders_new = Dict("$n" => Dict("signatures" => Set{Tuple{Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}},Float64,Float64}}(), "π" => Array{Array{Float64},1}(), "π_s" => Array{Array{Float64},1}(), "y_opt" => Array{Array{Float64},1}(), "const" => Array{Float64,1}()) for n in sample)
 
@@ -1712,18 +1793,16 @@ function Benders_with_warm_start(Data, Ξ_y_new, zstar_new, PredictionStar, ρ_n
     m_master_new = create_master_problem(Data, ρ_new)
     initilization_restricted_master_Benders(Data, m_master_new, z, zstar_new, y, Ξ_y_new, PredictionStar_new, α)
     m_oracle, obj  = create_oracle_problem(Data)
-    convergence = false
+    convergence_new = false
     Max_iter = 250
     cumulative_time_new = 0.0
     UB_Benders_new = Inf
+    gap_new =   Inf
 
-    while ~convergence && iter ≤ Max_iter
+    while ~convergence_new && iter ≤ Max_iter && gap_new ≥ 1e-1
 
-        if iter == 1
-            global u_Benders_new, v_Benders_new, w_Benders_new, λ_Benders_new, μ_Benders_new, θ_Benders_new, LB_Benders_new, time_master_Benders_new = warm_start_solution_Benders(Data, z, zstar_new, y, Ξ_y_new, PredictionStar, PredictionStar_new, ρ_new, α, cuts_Benders)
-        else                                                                
-            global u_Benders_new, v_Benders_new, w_Benders_new, λ_Benders_new, μ_Benders_new, θ_Benders_new, LB_Benders_new, time_master_Benders_new = solve_master_problem(m_master_new)
-        end
+        global u_Benders_new, v_Benders_new, w_Benders_new, λ_Benders_new, μ_Benders_new, θ_Benders_new, LB_Benders_new, time_master_Benders_new = solve_master_problem(m_master_new)
+
         convergence = solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y_new, u_Benders_new, v_Benders_new, w_Benders_new, λ_Benders_new, μ_Benders_new, θ_Benders_new, oracle_dict_new, zstar_new, PredictionStar_new)
         UB_Benders_new = minimum([UB_Benders_new, Upper_Bound(Data, u_Benders_new, v_Benders_new, w_Benders_new, λ_Benders_new, oracle_dict_new["ϑ"], α)])
         update_master_Benders(Data, m_master_new, z, zstar_new, y, oracle_dict_new, cuts_Benders_new, cuts_new)
@@ -1731,38 +1810,30 @@ function Benders_with_warm_start(Data, Ξ_y_new, zstar_new, PredictionStar, ρ_n
         cumulative_time_new += time_master_Benders_new + total_time_oracle_new
         total_time_new = time_master_Benders_new + total_time_oracle_new
         println("================================================")
-        println("                       Bneders                  ")
-        println("                      Iter= $iter               ")
+        println("                                                     Benders                                                      ")
+        println("                                                    Iter= $iter                                                    ")
         println("================================================")
         iter +=  1
         push!(LowerBound_new, LB_Benders_new)
         push!(UpperBound_new, UB_Benders_new)
-        push!(Time_new,(time_master_Benders_new, total_time_oracle_new,total_time_new))
+        push!(Time_new, (time_master_Benders_new, total_time_oracle_new, total_time_new))
+
+        gap_new =( UB_Benders_new - LB_Benders_new)/UB_Benders_new
 
     end
+
 
     return x_Benders_new, λ_Benders_new, μ_Benders_new, θ_Benders_new, LB_Benders_new, iter - 1
    
 end
 
-zstar = Data.zstar
+initial_iter = 10
+step = 2
 
-Models, errors = scenarios(Data)
+xmin, xmax = initial_iter, length(LowerBound)
+ymin, ymax = LowerBound[initial_iter]/1e5-10, UpperBound[initial_iter]/1e5
 
-Ξ_y = uncertainty_support(Data, zstar, errors)
-
-PredictionStar = forecast(Data, zstar, Models)
-
-
-# Trimming parameters
-
-α = 0.1
-ρ = 1.1*critical_radius(Data, errors, Ξ_y, α, zstar) 
-
-xmin, xmax = 100, Max_iter
-ymin, ymax = LowerBound[100]/1e5, UpperBound[100]/1e5
-
-plot(collect(100:10:length(LowerBound)), LowerBound[100:10:end]/1e5, 
+plot(collect(initial_iter:step:length(LowerBound)), LowerBound[initial_iter:step:end]/1e5, 
     lw = 2, 
     xlims = (xmin, xmax),
     ylims = (ymin, ymax),
@@ -1782,7 +1853,10 @@ annotate!(
          10                        # Tamaño de la fuente
     )
 )
-plot!(collect(100:10:length(UpperBound)), UpperBound[100:10:end]/1e5, lw = 2, label = L"UB")
+plot!(collect(initial_iter:step:length(UpperBound)), UpperBound[initial_iter:step:end]/1e5, lw = 2, label = L"UB")
+
+
+
 savefig("images/bounds.png")
 GAP = (UpperBound - LowerBound)./UpperBound
 
@@ -1962,7 +2036,7 @@ end
 optimize!(m_master_warm)
 
 
-todas_las_cons = Set(all_constraints(m_master, AffExpr, MOI.LessThan{Float64}))
+todas_las_cons = Set(all_constraints(m_master, AffExpr, MOI.LessThan{Float64}[end]))
 
 
 generated_cons = Set(vcat([cuts["$n"][i] for i ∈ eachindex(cuts["$n"]), n ∈ 1:N]...))
@@ -2154,3 +2228,34 @@ collect(values(oracle_dict["π_s"]["$n"])) == cuts_Benders["$n"]["π_s"][235]
 oracle_dict["const"]["$n"]
 collect(cuts_Benders["$n"]["signatures"])[235][8]
 cuts_Benders["$n"]["const"][end]
+
+all_constraints(m_master, AffExpr, MOI.LessThan{Float64})[end]
+all_constraints(m_master_warm, AffExpr, MOI.LessThan{Float64})[end]
+
+initial_iter = 10
+step = 1
+
+xmin, xmax = initial_iter, length(LowerBound_new)
+ymin, ymax = LowerBound_new[initial_iter]/1e5-10, UpperBound_new[initial_iter]/1e5
+
+plot(collect(initial_iter:step:length(LowerBound_new)), LowerBound_new[initial_iter:step:end]/1e5, 
+    lw = 2, 
+    xlims = (xmin, xmax),
+    ylims = (ymin, ymax),
+    xlabel = L"Iterations", 
+    ylabel = L"Cost", 
+    label = L"LB", 
+    yformatter = :plain,
+    top_margin = 12mm,    
+    left_margin = 10mm )
+annotate!(
+    xmin - 5,                          # Posición X: alineado con el borde izquierdo del eje
+    ymax,                   # Posición Y: justo por encima del valor máximo del eje
+    text("x "*L"10^5",           # Texto en LaTeX
+         :left,                    # Alineación horizontal
+         :center,                  # Alineación vertical
+         rotation = 0,            # <--- ESTO LO PONE EN POSICIÓN VERTICAL
+         10                        # Tamaño de la fuente
+    )
+)
+plot!(collect(initial_iter:step:length(UpperBound_new)), UpperBound_new[initial_iter:step:end]/1e5, lw = 2, label = L"UB")
