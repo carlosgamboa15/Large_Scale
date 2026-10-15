@@ -336,7 +336,7 @@ function modify_oracle(Data, m_oracle, obj, y, Ξ_y, n, u ,v, w, λ, PredictionS
 
 end
 
-function solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y, u, v, w, λ, μ, θ, oracle_dict, zstar, PredictionStar)
+function solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y, u, v, w, λ, μ, θ, oracle_dict, zstar, PredictionStar, initial_cuts, idx)
     
     N = Data.N
     Tf = Data.Tf
@@ -410,9 +410,15 @@ function solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y, u, v, w, λ, μ, 
 
         end
 
-        oracle_dict["const"]["$n"] = objective_value(m_oracle) - (const_term_x1 + const_term_x2 + const_term_x3 + const_term_x4 + const_term_x5 + const_term_x6) - λ*norm(y_opt - y[n],1)
+        oracle_dict["const"]["$n"] = copy(objective_value(m_oracle) - (const_term_x1 + const_term_x2 + const_term_x3 + const_term_x4 + const_term_x5 + const_term_x6) - λ*norm(y_opt - y[n],1))
         oracle_dict["time"]["$n"] = time_
-        oracle_dict["ϑ"][n] = obj_val - λ*norm(zstar_global - z[n],1)
+
+        if n ∈ idx
+            ϑ_ = value(constraint_object(initial_cuts["$n"]).func) + θ_Benders_new - constraint_object(initial_cuts["$n"]).set.upper 
+            oracle_dict["ϑ"][n] = maximum([ϑ_, objective_value(m_oracle) - λ*norm(zstar_global - z[n],1)])
+        else
+            oracle_dict["ϑ"][n] = objective_value(m_oracle) - λ*norm(zstar_global - z[n],1)
+        end
 
         if viol ≥ -1e-2
             violation[n] = false
@@ -423,7 +429,7 @@ function solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y, u, v, w, λ, μ, 
     end
 
     if sum(violation) < N 
-        print("feasibility for $(N - sum(violation)) subproblems")
+        print("feasibility for $(N - sum(violation)) subproblems\n")
     end
 
     convergence = ~Base.any(violation)
@@ -835,7 +841,7 @@ function deterministic_equivalent_problem(Data, y_list, PredictionStar)
    
 end
 
-function dual_vertices(Data, u, v, w, y_opt, PredictionStar, oracle_dict, n) 
+function dual_vertices(Data, u, v, w, y_opt, PredictionStar) 
 
     D = Data.D
     Tf = Data.Tf
@@ -856,13 +862,20 @@ function dual_vertices(Data, u, v, w, y_opt, PredictionStar, oracle_dict, n)
     m_oracle = dualize(model; dual_names = DualNames())
     set_optimizer(m_oracle, optimizer_with_attributes(() -> Gurobi.Optimizer(GUROBI_ENV), "OutputFlag" => 0, "Method" => 2, "Crossover" => 0))
     optimize!(m_oracle)
-    optimize!(model)
-    status = termination_status(model)
-    obj = objective_value(model)
     status = termination_status(m_oracle)
     if status != MOI.OPTIMAL
         error(" Status: $(status)")
     end
+
+    π = Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T)
+    π_s = Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T)
+    x1 = Dict("($i, $t)" => 0.0 for i in Ig, t in T)
+    x2 = Dict("($i, $t)" => 0.0 for i in Ig, t in T)
+    x3 = Dict("($i, $t)" => 0.0 for i in Ig, t in T[2:end])
+    x4 = Dict("($i, $t)" => 0.0 for i in Ig, t in T[2:end])
+    x5 = Dict("($i, $t)" => 0.0 for i in Ig, t in [1])
+    x6 = Dict("($i, $t)" => 0.0 for i in Ig, t in [1])
+    const_term = 0.0
 
     obj_funcion = objective_function(m_oracle)
 
@@ -872,29 +885,29 @@ function dual_vertices(Data, u, v, w, y_opt, PredictionStar, oracle_dict, n)
 
         for b in bus_renewable_generation
 
-            oracle_dict["π"]["$n"]["($b, $t)"] = value(m_oracle[Symbol("π[$b,$t]")])
-            oracle_dict["π_s"]["$n"]["($b, $t)"] = value(m_oracle[Symbol("π_s[$b,$t]")])
+            π["($b, $t)"] = value(m_oracle[Symbol("π[$b,$t]")])
+            π_s["($b, $t)"] = value(m_oracle[Symbol("π_s[$b,$t]")])
 
         end
 
         for i in Ig
 
-            oracle_dict["x1"]["$n"]["($i, $t)"] = value(m_oracle[Symbol("x1[$i,$t]")])
-            oracle_dict["x2"]["$n"]["($i, $t)"] = value(m_oracle[Symbol("x2[$i,$t]")])
+            x1["($i, $t)"] = value(m_oracle[Symbol("x1[$i,$t]")])
+            x2["($i, $t)"] = value(m_oracle[Symbol("x2[$i,$t]")])
             const_term_x1 = get(obj_funcion.terms, m_oracle[Symbol("x1[$i,$t]")], 0.0) * value(m_oracle[Symbol("x1[$i,$t]")])
             const_term_x2 = get(obj_funcion.terms, m_oracle[Symbol("x2[$i,$t]")], 0.0) * value(m_oracle[Symbol("x2[$i,$t]")])
 
             if t == 1
 
-                oracle_dict["x5"]["$n"]["($i, $t)"] = value(m_oracle[Symbol("x5[$i,$t]")])
-                oracle_dict["x6"]["$n"]["($i, $t)"] = value(m_oracle[Symbol("x6[$i,$t]")])
+                x5["($i, $t)"] = value(m_oracle[Symbol("x5[$i,$t]")])
+                x6["($i, $t)"] = value(m_oracle[Symbol("x6[$i,$t]")])
                 const_term_x5 = get(obj_funcion.terms, m_oracle[Symbol("x5[$i,$t]")], 0.0) * value(m_oracle[Symbol("x5[$i,$t]")])
                 const_term_x6 = get(obj_funcion.terms, m_oracle[Symbol("x6[$i,$t]")], 0.0) * value(m_oracle[Symbol("x6[$i,$t]")])
 
             else
 
-                oracle_dict["x3"]["$n"]["($i, $t)"] = value(m_oracle[Symbol("x3[$i,$t]")])
-                oracle_dict["x4"]["$n"]["($i, $t)"] = value(m_oracle[Symbol("x4[$i,$t]")])
+                x3["($i, $t)"] = value(m_oracle[Symbol("x3[$i,$t]")])
+                x4["($i, $t)"] = value(m_oracle[Symbol("x4[$i,$t]")])
                 const_term_x3 = get(obj_funcion.terms, m_oracle[Symbol("x3[$i,$t]")], 0.0) * value(m_oracle[Symbol("x3[$i,$t]")])
                 const_term_x4 = get(obj_funcion.terms, m_oracle[Symbol("x4[$i,$t]")], 0.0) * value(m_oracle[Symbol("x4[$i,$t]")])
 
@@ -905,9 +918,9 @@ function dual_vertices(Data, u, v, w, y_opt, PredictionStar, oracle_dict, n)
     end
 
 
-    oracle_dict["const"]["$n"] = objective_value(m_oracle) - (const_term_x1 + const_term_x2 + const_term_x3 + const_term_x4 + const_term_x5 + const_term_x6)
+    const_term = objective_value(m_oracle) - (const_term_x1 + const_term_x2 + const_term_x3 + const_term_x4 + const_term_x5 + const_term_x6)
 
-    return nothing
+    return π, π_s, x1, x2, x3, x4, x5, x6, const_term
 end
 
 function initilization_restricted_master_Benders(Data, m_master, z, zstar, y, Ξ_y, PredictionStar, α)
@@ -962,23 +975,18 @@ function initilization_restricted_master_Benders(Data, m_master, z, zstar, y, Ξ
 
     u, v, w = deterministic_equivalent_problem(Data, y_list, PredictionStar)
 
+    initial_cuts = Dict{String, Any}()
+
     for k ∈ 1:m 
 
         n = idx[k]
 
         yproj = y_list[k]
 
-        dual_vertices(Data, u, v, w, yproj, PredictionStar, oracle_dict, n)
+        π, π_s, x1, x2, x3, x4, x5, x6, const_term = dual_vertices(Data, u, v, w, yproj, PredictionStar)
 
         ex = @expression(m_master, AffExpr())
 
-        x1 = oracle_dict["x1"]["$n"]
-        x2 = oracle_dict["x2"]["$n"]
-        x3 = oracle_dict["x3"]["$n"]
-        x4 = oracle_dict["x4"]["$n"]
-        x5 = oracle_dict["x5"]["$n"]
-        x6 = oracle_dict["x6"]["$n"]
-        const_term = oracle_dict["const"]["$n"]
 
         δ = norm(vcat(yproj...) - y[n], 1) +
             norm(vcat(zstar...) - z[n], 1)
@@ -1011,122 +1019,13 @@ function initilization_restricted_master_Benders(Data, m_master, z, zstar, y, Ξ
             end
         end
 
-        @constraint(m_master, ex - δ*m_master[:λ] + γ ≤ m_master[:μ][n] + m_master[:θ])
+       con = @constraint(m_master, ex - δ*m_master[:λ] + γ ≤ m_master[:μ][n] + m_master[:θ])
+
+       initial_cuts["$n"] = con
 
     end
 
-    return nothing
- 
-end
-
-function initilization_restricted_master_Benders_degenerative(Data, m_master, z, zstar, y, Ξ_y, PredictionStar, α)
-
-    N = Data.N
-    RU = Data.RU
-    RD = Data.RD
-    Pmin = Data.Pmin
-    Pmax = Data.Pmax
-    Tf = Data.Tf    
-
-    # Ignitial state
-    p0 = zeros(number_of_generators)
-    u0 = zeros(number_of_generators)
-
-    a = Ξ_y[:,1]
-    b = Ξ_y[:,2]
-
-    m = ceil(Int, N*α)
-
-    dist = zeros(N)
-
-    for n in 1:N
-
-        dz = norm(z[n] - vcat(zstar...), 1)
-
-        dy = 0.0
-        for d in eachindex(a)
-            if y[n][d] < a[d]
-                dy += a[d] - y[n][d]
-            elseif y[n][d] > b[d]
-                dy += y[n][d] - b[d]
-            end
-        end
-
-        dist[n] = dz + dy
-
-    end
-
-    idx = sortperm(dist)
-
-    y_list = []
-
-    for k in 1:m
-
-        n = idx[k]
-
-        yproj = trunc.(clamp.(y[n], a, b), digits = 2)
-        push!(y_list, @views [yproj[((b - 1) * Tf + 1):(b * Tf)] for b in 1:length(bus_renewable_generation)]) 
-
-    end   
-
-    u, v, w = deterministic_equivalent_problem(Data, y_list, PredictionStar)
-
-    for k ∈ 1:m 
-
-        n = idx[k]
-
-        yproj = y_list[k]
-
-        dual_vertices(Data, u, v, w, yproj, PredictionStar, oracle_dict, n)
-
-        ex = @expression(m_master, AffExpr())
-
-        x1 = oracle_dict["x1"]["$n"]
-        x2 = oracle_dict["x2"]["$n"]
-        x3 = oracle_dict["x3"]["$n"]
-        x4 = oracle_dict["x4"]["$n"]
-        x5 = oracle_dict["x5"]["$n"]
-        x6 = oracle_dict["x6"]["$n"]
-        const_term = oracle_dict["const"]["$n"]
-
-        δ = norm(vcat(yproj...) - y[n], 1) +
-            norm(vcat(zstar...) - z[n], 1)
-
-        γ = const_term
-
-        for t in T
-
-            for i in Ig
-
-                add_to_expression!(ex, Pmax[i]*x1["($i, $t)"], m_master[:u][i, t])
-                add_to_expression!(ex, Pmin[i]*x2["($i, $t)"], m_master[:u][i, t])
-
-                if t == 1
-
-                    add_to_expression!(ex, RU[i]*u0[i]*x5["($i, $t)"] + p0[i]*x5["($i, $t)"])
-                    add_to_expression!(ex, Pmax[i]*x5["($i, $t)"], m_master[:v][i, t])
-
-                    add_to_expression!(ex, RD[i]*x6["($i, $t)"], m_master[:u][i, t])
-                    add_to_expression!(ex, Pmax[i]*x6["($i, $t)"], m_master[:w][i, t])
-                    add_to_expression!(ex, -p0[i]*x6["($i, $t)"])
-
-                else
-                    add_to_expression!(ex, RU[i]*x3["($i, $t)"], m_master[:u][i, t-1])
-                    add_to_expression!(ex, Pmax[i]*x3["($i, $t)"], m_master[:v][i, t])
-
-                    add_to_expression!(ex, RD[i]*x4["($i, $t)"], m_master[:u][i, t])
-                    add_to_expression!(ex, Pmax[i]*x4["($i, $t)"], m_master[:w][i, t])
-                end
-            end
-        end
-
-        @constraint(m_master, con, ex - δ*m_master[:λ] + γ ≤ m_master[:μ][n] + m_master[:θ])
-
-    end
-
-    set_normalized_rhs(m_master[:con], 0.0)
-
-    return nothing
+    return initial_cuts, idx[1:m]
  
 end
 
@@ -1194,12 +1093,11 @@ function warm_start_solution_CCG(data, instalations, demand, G, D, ξ_dict, Ξ_y
  
 end
 
-function warm_start_solution_Benders(Data, z, zstar, y, Ξ_y, PredictionStar, PredictionStar_new, ρ, α, cuts_Benders)
+function warm_start_solution_Benders(Data, z, zstar_new, y, Ξ_y_new, PredictionStar_new, ρ_new, α, cuts_Benders)
 
-    m_master_warm = create_master_problem(Data, ρ)
+    m_master_warm = create_master_problem(Data, ρ_new)
 
-    initilization_restricted_master_Benders(Data, m_master_warm, z, zstar, y, Ξ_y, PredictionStar, α)
-
+    initilization_restricted_master_Benders(Data, m_master_warm, z, zstar_new, y, Ξ_y_new, PredictionStar_new, α)
 
     N = Data.N
     RU = Data.RU
@@ -1458,11 +1356,10 @@ function Upper_Bound(Data, u, v, w, λ, vec, α)
     Csu = Data.Csu
     Csd = Data.Csd
 
-    UB = sum(Cu[i]*u[i, t] for i in Ig, t in T) + sum(Csu[i]*v[i, t] for i in Ig, t in T) +  sum(Csd[i]*w[i, t] for i in Ig, t in T) + ρ*λ + CVaR(α, vec)
+    UB = sum(Cu[i]*u[i, t] for i in Ig, t in T) + sum(Csu[i]*v[i, t] for i in Ig, t in T) +  sum(Csd[i]*w[i, t] for i in Ig, t in T) + ρ*λ + CVaR(1-α, vec)
 
     return UB
 
-    
 end
 
 function CCG_algorithm(Data, errors, Ξ_y, zstar, PredictionStar, ρ, α)
@@ -1706,20 +1603,7 @@ function Benders_with_warm_start(Data, Ξ_y_new, zstar_new, PredictionStar, ρ_n
     y = [trunc.(s[:], digits = 2) for s in eachcol(global_residual_scenarios)]
     z = [trunc.(s[:], digits = 2) for s in eachcol(global_contextual_scenarios)]
 
-    y_val = Dict("$n" => [zeros(Tf) for b ∈ collect(1:Tb_renewable)] for n ∈ sample)
-    π = Dict("$n" => Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T) for n ∈ sample)
-    π_s = Dict("$n" => Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T) for n ∈ sample)
-    x1 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T) for n ∈ sample)
-    x2 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T) for n ∈ sample)
-    x3 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T[2:end]) for n ∈ sample)
-    x4 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T[2:end]) for n ∈ sample)
-    x5 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in [1]) for n ∈ sample)
-    x6 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in [1]) for n ∈ sample)
-    const_term = Dict("$n" => 0.0 for n ∈ sample)
-    time_oracle = Dict("$n" => 0.0 for n ∈ sample)
-
-
-    oracle_dict_warm = Dict("y" => y_val, "π" => π, "π_s" => π_s, "x1" => x1, "x2" => x2, "x3" => x3, "x4" => x4, "x5" => x5, "x6" => x6, "const" => const_term, "time" => time_oracle, "ϑ" => zeros(N))
+    oracle_dict_warm = Dict("y" => Dict("$n" => [zeros(Tf) for b ∈ collect(1:Tb_renewable)] for n ∈ sample), "π" => Dict("$n" => Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T) for n ∈ sample), "π_s" => Dict("$n" => Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T) for n ∈ sample), "x1" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T) for n ∈ sample), "x2" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T) for n ∈ sample), "x3" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T[2:end]) for n ∈ sample), "x4" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T[2:end]) for n ∈ sample), "x5" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in [1]) for n ∈ sample), "x6" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in [1]) for n ∈ sample), "const" => Dict("$n" => 0.0 for n ∈ sample), "time" => Dict("$n" => 0.0 for n ∈ sample), "ϑ" => zeros(N))
     cuts_Benders_warm = Dict("$n" => Dict("signatures" => Set{Tuple{Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}},Float64,Float64}}(), "π" => Array{Array{Float64},1}(), "π_s" => Array{Array{Float64},1}(), "y_opt" => Array{Array{Float64},1}(), "const" => Array{Float64,1}()) for n in sample)
 
     iter = 1
@@ -1738,23 +1622,23 @@ function Benders_with_warm_start(Data, Ξ_y_new, zstar_new, PredictionStar, ρ_n
     UB_Benders_warm = Inf
     gap_warm =   Inf
 
-    while ~convergence_warm && iter ≤ Max_iter && gap_warm ≥ 1e-1
+    while ~convergence_warm && iter ≤ Max_iter && #gap_warm ≥ 1e-1
 
         if iter == 1
-            global u_Benders_warm, v_Benders_warm, w_Benders_warm, λ_Benders_warm, μ_Benders_warm, θ_Benders_warm, LB_Benders_warm, time_master_Benders_warm = warm_start_solution_Benders(Data, z, zstar_new, y, Ξ_y_new, PredictionStar, PredictionStar_new, ρ_new, α, cuts_Benders)
+            global u_Benders_warm, v_Benders_warm, w_Benders_warm, λ_Benders_warm, μ_Benders_warm, θ_Benders_warm, LB_Benders_warm, time_master_Benders_warm = warm_start_solution_Benders(Data, z, zstar_new, y, Ξ_y_new, PredictionStar_new, ρ_new, α, cuts_Benders)
         else                                                                
             global u_Benders_warm, v_Benders_warm, w_Benders_warm, λ_Benders_warm, μ_Benders_warm, θ_Benders_warm, LB_Benders_warm, time_master_Benders_warm = solve_master_problem(m_master_warm)
         end
-        convergence_warm= solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y_new, u_Benders_warm, v_Benders_warm, w_Benders_warm, λ_Benders_warm, μ_Benders_warm, θ_Benders_warm, oracle_dict_warm, zstar_new, PredictionStar_new)
+        convergence_warm = solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y_new, u_Benders_warm, v_Benders_warm, w_Benders_warm, λ_Benders_warm, μ_Benders_warm, θ_Benders_warm, oracle_dict_warm, zstar_new, PredictionStar_new)
         UB_Benders_warm = minimum([UB_Benders_warm, Upper_Bound(Data, u_Benders_warm, v_Benders_warm, w_Benders_warm, λ_Benders_warm, oracle_dict_warm["ϑ"], α)])
         update_master_Benders(Data, m_master_warm, z, zstar_new, y, oracle_dict_warm, cuts_Benders_warm, cuts_warm)
         total_time_oracle_warm = sum(oracle_dict_warm["time"]["$n"][end] for n ∈ sample)
         cumulative_time_warm += time_master_Benders_warm + total_time_oracle_warm
         total_time_warm = time_master_Benders_warm + total_time_oracle_warm
         println("================================================")
-        println("                                                     Benders                                                      ")
-        println("                                                    Iter= $iter                                                    ")
-        println("================================================")
+        println(" Lower Bound: $LB_Benders_new\n") 
+        println(" Iteration: $iter")
+        println("================================================") 
         push!(LowerBound_warm, LB_Benders_warm)
         push!(UpperBound_warm, UB_Benders_warm)
         push!(Time_warm, (time_master_Benders_warm, total_time_oracle_warm, total_time_warm))
@@ -1767,22 +1651,8 @@ function Benders_with_warm_start(Data, Ξ_y_new, zstar_new, PredictionStar, ρ_n
 
     end
 
-    y_val = Dict("$n" => [zeros(Tf) for b ∈ collect(1:Tb_renewable)] for n ∈ sample)
-    π = Dict("$n" => Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T) for n ∈ sample)
-    π_s = Dict("$n" => Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T) for n ∈ sample)
-    x1 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T) for n ∈ sample)
-    x2 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T) for n ∈ sample)
-    x3 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T[2:end]) for n ∈ sample)
-    x4 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T[2:end]) for n ∈ sample)
-    x5 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in [1]) for n ∈ sample)
-    x6 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in [1]) for n ∈ sample)
-    const_term = Dict("$n" => 0.0 for n ∈ sample)
-    time_oracle = Dict("$n" => 0.0 for n ∈ sample)
-
-
-    oracle_dict_new = Dict("y" => y_val, "π" => π, "π_s" => π_s, "x1" => x1, "x2" => x2, "x3" => x3, "x4" => x4, "x5" => x5, "x6" => x6, "const" => const_term, "time" => time_oracle, "ϑ" => zeros(N))
+    oracle_dict_new = Dict("y" => Dict("$n" => [zeros(Tf) for b ∈ collect(1:Tb_renewable)] for n ∈ sample), "π" => Dict("$n" => Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T) for n ∈ sample), "π_s" => Dict("$n" => Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T) for n ∈ sample), "x1" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T) for n ∈ sample), "x2" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T) for n ∈ sample), "x3" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T[2:end]) for n ∈ sample), "x4" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T[2:end]) for n ∈ sample), "x5" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in [1]) for n ∈ sample), "x6" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in [1]) for n ∈ sample), "const" => Dict("$n" => 0.0 for n ∈ sample), "time" => Dict("$n" => 0.0 for n ∈ sample), "ϑ" => [-Inf for n ∈ sample])
     cuts_Benders_new = Dict("$n" => Dict("signatures" => Set{Tuple{Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}},Float64,Float64}}(), "π" => Array{Array{Float64},1}(), "π_s" => Array{Array{Float64},1}(), "y_opt" => Array{Array{Float64},1}(), "const" => Array{Float64,1}()) for n in sample)
-
     iter = 1
 
     LowerBound_new = []
@@ -1791,7 +1661,7 @@ function Benders_with_warm_start(Data, Ξ_y_new, zstar_new, PredictionStar, ρ_n
     cuts_new = Dict("$n" => [] for n ∈ sample)
 
     m_master_new = create_master_problem(Data, ρ_new)
-    initilization_restricted_master_Benders(Data, m_master_new, z, zstar_new, y, Ξ_y_new, PredictionStar_new, α)
+    initial_cuts_new, idx_new = initilization_restricted_master_Benders(Data, m_master_new, z, zstar_new, y, Ξ_y_new, PredictionStar_new, α)
     m_oracle, obj  = create_oracle_problem(Data)
     convergence_new = false
     Max_iter = 250
@@ -1799,26 +1669,27 @@ function Benders_with_warm_start(Data, Ξ_y_new, zstar_new, PredictionStar, ρ_n
     UB_Benders_new = Inf
     gap_new =   Inf
 
-    while ~convergence_new && iter ≤ Max_iter && gap_new ≥ 1e-1
+    while ~convergence_new && iter ≤ Max_iter # && gap_new ≥ 1e-1
 
         global u_Benders_new, v_Benders_new, w_Benders_new, λ_Benders_new, μ_Benders_new, θ_Benders_new, LB_Benders_new, time_master_Benders_new = solve_master_problem(m_master_new)
 
-        convergence = solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y_new, u_Benders_new, v_Benders_new, w_Benders_new, λ_Benders_new, μ_Benders_new, θ_Benders_new, oracle_dict_new, zstar_new, PredictionStar_new)
+        println("================================================")
+        println(" Lower Bound: $LB_Benders_new\n") 
+        println(" Iteration: $iter")
+        println("================================================")                                        
+
+        convergence_new = solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y_new, u_Benders_new, v_Benders_new, w_Benders_new, λ_Benders_new, μ_Benders_new, θ_Benders_new, oracle_dict_new, zstar_new, PredictionStar_new, initial_cuts_new, idx_new)
         UB_Benders_new = minimum([UB_Benders_new, Upper_Bound(Data, u_Benders_new, v_Benders_new, w_Benders_new, λ_Benders_new, oracle_dict_new["ϑ"], α)])
         update_master_Benders(Data, m_master_new, z, zstar_new, y, oracle_dict_new, cuts_Benders_new, cuts_new)
         total_time_oracle_new = sum(oracle_dict_new["time"]["$n"][end] for n ∈ sample)
         cumulative_time_new += time_master_Benders_new + total_time_oracle_new
         total_time_new = time_master_Benders_new + total_time_oracle_new
-        println("================================================")
-        println("                                                     Benders                                                      ")
-        println("                                                    Iter= $iter                                                    ")
-        println("================================================")
-        iter +=  1
         push!(LowerBound_new, LB_Benders_new)
         push!(UpperBound_new, UB_Benders_new)
         push!(Time_new, (time_master_Benders_new, total_time_oracle_new, total_time_new))
 
         gap_new =( UB_Benders_new - LB_Benders_new)/UB_Benders_new
+        iter +=  1
 
     end
 
@@ -1830,10 +1701,10 @@ end
 initial_iter = 10
 step = 2
 
-xmin, xmax = initial_iter, length(LowerBound)
-ymin, ymax = LowerBound[initial_iter]/1e5-10, UpperBound[initial_iter]/1e5
+xmin, xmax = initial_iter, length(LowerBound_new)
+ymin, ymax = LowerBound_new[initial_iter]/1e5-10, UpperBound_new[initial_iter]/1e5
 
-plot(collect(initial_iter:step:length(LowerBound)), LowerBound[initial_iter:step:end]/1e5, 
+plot(collect(initial_iter:step:length(LowerBound_new)), LowerBound_new[initial_iter:step:end]/1e5, 
     lw = 2, 
     xlims = (xmin, xmax),
     ylims = (ymin, ymax),
@@ -1853,7 +1724,7 @@ annotate!(
          10                        # Tamaño de la fuente
     )
 )
-plot!(collect(initial_iter:step:length(UpperBound)), UpperBound[initial_iter:step:end]/1e5, lw = 2, label = L"UB")
+plot!(collect(initial_iter:step:length(UpperBound_new)), UpperBound_new[initial_iter:step:end]/1e5, lw = 2, label = L"UB")
 
 
 
@@ -1870,7 +1741,6 @@ plot(collect(50:Max_iter), 100*GAP[50:end],
     label = "", 
     yformatter = :plain
   )
-  savefig("images/GAP.png")
 
 t_master_vec = [t[1] for t in Time]
 t_oracle_vec = [t[2] for t in Time]
@@ -1895,100 +1765,11 @@ plot!(twinx(p), collect(1:Max_iter), t_oracle_vec,
     legend = :topright
 )
 
-savefig("images/tiempo_master_oracle_dual.png")
+m_master_warm = create_master_problem(Data, ρ_new)
+initilization_restricted_master_Benders(Data, m_master_warm, z, zstar_new, y, Ξ_y_new, PredictionStar_new, α)
 
 
-posicion = findfirst(==(signature), collect(cuts_Benders["$n"]))
-
-x1 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T) for n ∈ sample)
-
-x1_aux = reconstruct_sub_dict(x1["$n"], collect(cuts_Benders["$n"])[posicion][1])
-
-for i ∈ collect(keys(x1_aux))
-    if x1_aux[i] != oracle_dict["x1"]["$n"][i]
-        print("es diferente para i = $i\n")
-    end
-end
-
-ex = @expression(m_master, AffExpr())
-
-y_opt = oracle_dict["y"]["$n"]
-π = oracle_dict["π"]["$n"]
-π_s = oracle_dict["π_s"]["$n"]
-x1 = oracle_dict["x1"]["$n"]
-x2 = oracle_dict["x2"]["$n"]
-x3 = oracle_dict["x3"]["$n"]
-x4 = oracle_dict["x4"]["$n"]
-x5 = oracle_dict["x5"]["$n"]
-x6 = oracle_dict["x6"]["$n"]
-const_term = oracle_dict["const"]["$n"]
-
-δ = norm(vcat(y_opt...) - y[n], 1) +
-    norm(vcat(zstar...) - z[n], 1)
-
-γ = const_term
-
-signature = (
-    Tuple(round.(values(x1); digits = 8)),
-    Tuple(round.(values(x2); digits = 8)),
-    Tuple(round.(values(x3); digits = 8)),
-    Tuple(round.(values(x4); digits = 8)),
-    Tuple(round.(values(x5); digits = 8)),
-    Tuple(round.(values(x6); digits = 8)),
-    round(δ; digits = 8),
-    round(γ; digits = 8)
-)
-
-for t in T
-
-    for i in Ig
-
-        add_to_expression!(ex, Pmax[i]*x1["($i, $t)"], m_master[:u][i, t])
-        add_to_expression!(ex, Pmin[i]*x2["($i, $t)"], m_master[:u][i, t])
-
-        if t == 1
-
-            add_to_expression!(ex, RU[i]*u0[i]*x5["($i, $t)"] + p0[i]*x5["($i, $t)"])
-            add_to_expression!(ex, Pmax[i]*x5["($i, $t)"], m_master[:v][i, t])
-
-            add_to_expression!(ex, RD[i]*x6["($i, $t)"], m_master[:u][i, t])
-            add_to_expression!(ex, Pmax[i]*x6["($i, $t)"], m_master[:w][i, t])
-            add_to_expression!(ex, -p0[i]*x6["($i, $t)"])
-
-        else
-            add_to_expression!(ex, RU[i]*x3["($i, $t)"], m_master[:u][i, t-1])
-            add_to_expression!(ex, Pmax[i]*x3["($i, $t)"], m_master[:v][i, t])
-
-            add_to_expression!(ex, RD[i]*x4["($i, $t)"], m_master[:u][i, t])
-            add_to_expression!(ex, Pmax[i]*x4["($i, $t)"], m_master[:w][i, t])
-        end
-    end
-end
-
-con = @constraint(m_master, ex - δ*m_master[:λ] + γ ≤ m_master[:μ][n] + m_master[:θ])
-
-con in cuts["$n"]
-
-typeof(cuts["$n"])
-
-signature ∈ cuts_Benders["$n"]
-
-findfirst(==(signature), collect(cuts_Benders["$n"]))
-cuts["$n"][end] == con
-constraint_object(con).func == constraint_object(cuts["$n"][end]).func
-constraint_object(con).set == constraint_object(cuts["$n"][end]).set
-
-mapeo_variables = Dict(
-    v_m1 => variable_by_name(m_master_warm, name(v_m1)) 
-    for v_m1 in all_variables(m_master)
-)
-
-m_master_warm = create_master_problem(Data, ρ)
-
-initilization_restricted_master_Benders(Data, m_master_warm, z, zstar, y, Ξ_y, PredictionStar, α)
-
-
-vars_m1 = all_variables(m_master)
+vars_m1 = all_variables(m_master_new)
 vars_m2 = all_variables(m_master_warm)
 
 mapeo = Dict(vars_m1[i] => vars_m2[i] for i in collect(1:length(vars_m1)))
@@ -2021,11 +1802,9 @@ function traducir_restriccion_rapida(m_master_warm, con_m1, mapeo)
     return nothing
 end
 
-
-
 for n ∈ 1:N 
 
-    for con_original in cuts["$n"]
+    for con_original in cuts_new["$n"]
 
         traducir_restriccion_rapida(m_master_warm, con_original, mapeo)
 
@@ -2113,149 +1892,36 @@ different_cons = setdiff(collect(diiif_con), collect(set_initial_cons))
 
 all_constraints(m_master_warm, AffExpr, MOI.LessThan{Float64})[end]
 
-m_master_warm = create_master_problem(Data, ρ)
 
-N = Data.N
-RU = Data.RU
-RD = Data.RD
-Pmin = Data.Pmin
-Pmax = Data.Pmax
-Tf = Data.Tf    
-
-# Ignitial state
-p0 = zeros(number_of_generators)
-u0 = zeros(number_of_generators)
-
-a = Ξ_y[:,1]
-b = Ξ_y[:,2]
-
-m = ceil(Int, N*α)
-
-dist = zeros(N)
-
-for n in 1:N
-
-    dz = norm(z[n] - vcat(zstar...), 1)
-
-    dy = 0.0
-    for d in eachindex(a)
-        if y[n][d] < a[d]
-            dy += a[d] - y[n][d]
-        elseif y[n][d] > b[d]
-            dy += y[n][d] - b[d]
-        end
-    end
-
-    dist[n] = dz + dy
-
+for i ∈ Ig, t ∈ T 
+    fix(m_master_new[:u][i, t], u_Benders_warm[i, t], force = true)
+    fix(m_master_new[:v][i, t], v_Benders_warm[i, t], force = true)
+    fix(m_master_new[:w][i, t], w_Benders_warm[i, t], force = true)
 end
 
-idx = sortperm(dist)
+update_master_Benders(Data, m_master_new, z, zstar_new, y, oracle_dict_warm, cuts_Benders_new, cuts_new)
 
-y_list = []
 
-for k in 1:m
+optimize!(m_master_new)
+objective_value(m_master_new)
 
-    n = idx[k]
 
-    yproj = trunc.(clamp.(y[n], a, b), digits = 2)
-    push!(y_list, @views [yproj[((b - 1) * Tf + 1):(b * Tf)] for b in 1:length(bus_renewable_generation)]) 
+UB = Upper_Bound(Data, u_Benders_new, v_Benders_warm, w_Benders_warm, λ_Benders_warm, oracle_dict_warm["ϑ"], α)
 
-end   
+oracle_dict_warm["ϑ"] == oracle_dict_new["ϑ"]
+μ_Benders_new
+θ_Benders_new
 
-u, v, w = deterministic_equivalent_problem(Data, y_list, PredictionStar)
+fix(m_master_new[:θ], oracle_dict_new["ϑ"][n], force = true)
+optimize!(m_master_new)
+termination_status(m_master_new) 
+n = 10
 
-for k ∈ 1:m 
+val = [value(constraint_object(cuts_new["$n"][i]).func) + θ_Benders_new - constraint_object(cuts_new["$n"][i]).set.upper for i ∈ eachindex(cuts_new["$n"])]
+val_initial = [value(constraint_object(initial_cuts["$n"]).func) + θ_Benders_new - constraint_object(initial_cuts["$n"]).set.upper ]
 
-    n = idx[k]
+trunc(maximum(vcat(val, val_initial)), digits = 7) == trunc(oracle_dict_new["ϑ"][n], digits = 7)
 
-    yproj = y_list[k]
-
-    dual_vertices(Data, u, v, w, yproj, PredictionStar, oracle_dict, n)
-
-    ex = @expression(m_master, AffExpr())
-
-    x1 = oracle_dict["x1"]["$n"]
-    x2 = oracle_dict["x2"]["$n"]
-    x3 = oracle_dict["x3"]["$n"]
-    x4 = oracle_dict["x4"]["$n"]
-    x5 = oracle_dict["x5"]["$n"]
-    x6 = oracle_dict["x6"]["$n"]
-    const_term = oracle_dict["const"]["$n"]
-
-    δ = norm(vcat(yproj...) - y[n], 1) +
-        norm(vcat(zstar...) - z[n], 1)
-
-    γ = const_term
-
-    for t in T
-
-        for i in Ig
-
-            add_to_expression!(ex, Pmax[i]*x1["($i, $t)"], m_master_warm[:u][i, t])
-            add_to_expression!(ex, Pmin[i]*x2["($i, $t)"], m_master_warm[:u][i, t])
-
-            if t == 1
-
-                add_to_expression!(ex, RU[i]*u0[i]*x5["($i, $t)"] + p0[i]*x5["($i, $t)"])
-                add_to_expression!(ex, Pmax[i]*x5["($i, $t)"], m_master_warm[:v][i, t])
-
-                add_to_expression!(ex, RD[i]*x6["($i, $t)"], m_master_warm[:u][i, t])
-                add_to_expression!(ex, Pmax[i]*x6["($i, $t)"], m_master_warm[:w][i, t])
-                add_to_expression!(ex, -p0[i]*x6["($i, $t)"])
-
-            else
-                add_to_expression!(ex, RU[i]*x3["($i, $t)"], m_master_warm[:u][i, t-1])
-                add_to_expression!(ex, Pmax[i]*x3["($i, $t)"], m_master_warm[:v][i, t])
-
-                add_to_expression!(ex, RD[i]*x4["($i, $t)"], m_master_warm[:u][i, t])
-                add_to_expression!(ex, Pmax[i]*x4["($i, $t)"], m_master_warm[:w][i, t])
-            end
-        end
-    end
-
-   @constraint(m_master_warm, con, ex - δ*m_master_warm[:λ] + γ ≤ m_master_warm[:μ][n] + m_master_warm[:θ])
-
-end
-
-set_normalized_rhs(m_master_warm[:con], 0.0)
-
-γ_vec = [collect(cuts_Benders["$n"]["signatures"])[i][8] for i ∈ eachindex(collect(cuts_Benders["$n"]["signatures"]))]
-findall(round(oracle_dict["const"]["$n"]; digits = 8) .== γ_vec)
-
-any(cuts_Benders["$n"]["π_s"][235] .>  0)
-collect(values(oracle_dict["π_s"]["$n"])) == cuts_Benders["$n"]["π_s"][235]
-oracle_dict["const"]["$n"]
-collect(cuts_Benders["$n"]["signatures"])[235][8]
-cuts_Benders["$n"]["const"][end]
-
-all_constraints(m_master, AffExpr, MOI.LessThan{Float64})[end]
-all_constraints(m_master_warm, AffExpr, MOI.LessThan{Float64})[end]
-
-initial_iter = 10
-step = 1
-
-xmin, xmax = initial_iter, length(LowerBound_new)
-ymin, ymax = LowerBound_new[initial_iter]/1e5-10, UpperBound_new[initial_iter]/1e5
-
-plot(collect(initial_iter:step:length(LowerBound_new)), LowerBound_new[initial_iter:step:end]/1e5, 
-    lw = 2, 
-    xlims = (xmin, xmax),
-    ylims = (ymin, ymax),
-    xlabel = L"Iterations", 
-    ylabel = L"Cost", 
-    label = L"LB", 
-    yformatter = :plain,
-    top_margin = 12mm,    
-    left_margin = 10mm )
-annotate!(
-    xmin - 5,                          # Posición X: alineado con el borde izquierdo del eje
-    ymax,                   # Posición Y: justo por encima del valor máximo del eje
-    text("x "*L"10^5",           # Texto en LaTeX
-         :left,                    # Alineación horizontal
-         :center,                  # Alineación vertical
-         rotation = 0,            # <--- ESTO LO PONE EN POSICIÓN VERTICAL
-         10                        # Tamaño de la fuente
-    )
-)
-plot!(collect(initial_iter:step:length(UpperBound_new)), UpperBound_new[initial_iter:step:end]/1e5, lw = 2, label = L"UB")
+ maximum(val) < θ_Benders_new 
+ 
+ CVaR(1-α, oracle_dict_new["ϑ"]) 

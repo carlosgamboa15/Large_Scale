@@ -44,7 +44,7 @@ export Data
     S,  = size(renewable_generation_profile)
     maximum_renewable_generation = CSV.read(joinpath(pwd(), syst, "maximum_renewable_generation.csv"), DataFrame;header=false)
     bus_renewable_generation = maximum_renewable_generation[:,1]
-    N = 50 # Number of scenarios
+    N = 10 # Number of scenarios
 
     Tf = 24 
     Ig = Int(generators[end,1]) 
