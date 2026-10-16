@@ -414,7 +414,7 @@ function solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y, u, v, w, λ, μ, 
         oracle_dict["time"]["$n"] = time_
 
         if n ∈ idx
-            ϑ_ = value(constraint_object(initial_cuts["$n"]).func) + θ_Benders_new - constraint_object(initial_cuts["$n"]).set.upper 
+            ϑ_ = value(constraint_object(initial_cuts["$n"]).func) + θ - constraint_object(initial_cuts["$n"]).set.upper 
             oracle_dict["ϑ"][n] = maximum([ϑ_, objective_value(m_oracle) - λ*norm(zstar_global - z[n],1)])
         else
             oracle_dict["ϑ"][n] = objective_value(m_oracle) - λ*norm(zstar_global - z[n],1)
@@ -1093,11 +1093,11 @@ function warm_start_solution_CCG(data, instalations, demand, G, D, ξ_dict, Ξ_y
  
 end
 
-function warm_start_solution_Benders(Data, z, zstar_new, y, Ξ_y_new, PredictionStar_new, ρ_new, α, cuts_Benders)
+function warm_start_solution_Benders(Data, m_master_warm, z, zstar_new, y, Ξ_y_new, PredictionStar_new, ρ_new, α, cuts_Benders)
 
-    m_master_warm = create_master_problem(Data, ρ_new)
+    m_master_aux = create_master_problem(Data, ρ_new)
 
-    initilization_restricted_master_Benders(Data, m_master_warm, z, zstar_new, y, Ξ_y_new, PredictionStar_new, α)
+    initilization_restricted_master_Benders(Data, m_master_aux, z, zstar_new, y, Ξ_y_new, PredictionStar_new, α)
 
     N = Data.N
     RU = Data.RU
@@ -1132,7 +1132,7 @@ function warm_start_solution_Benders(Data, z, zstar_new, y, Ξ_y_new, Prediction
 
         for signature ∈ cuts_Benders["$n"]["signatures"]
 
-            ex = @expression(m_master_warm, AffExpr())
+            ex = @expression(m_master_aux, AffExpr())
 
             x1_val = signature[1]
             x2_val = signature[2]
@@ -1157,7 +1157,6 @@ function warm_start_solution_Benders(Data, z, zstar_new, y, Ξ_y_new, Prediction
             yopt = cuts_Benders["$n"]["y_opt"][i]
             y_opt = @views [yopt[((b - 1) * Tf + 1):(b * Tf)] for b in 1:length(bus_renewable_generation)]
 
-            # γ = cuts_Benders["$n"]["const"][i] - 2*sum(π["($b, $t)"]*maximum([PredictionStar[ind_renewable_generation[b]][t] + y_opt[ind_renewable_generation[b]][t], 0.0])  for b ∈ bus_renewable_generation, t ∈ T)
             γ += sum(π["($b, $t)"]*maximum([PredictionStar_new[ind_renewable_generation[b]][t] + y_opt[ind_renewable_generation[b]][t], 0.0]) + π_s["($b, $t)"]*maximum([PredictionStar_new[ind_renewable_generation[b]][t] + y_opt[ind_renewable_generation[b]][t], 0.0]) for b ∈ bus_renewable_generation, t ∈ T)
             γ = signature[8]
 
@@ -1165,29 +1164,29 @@ function warm_start_solution_Benders(Data, z, zstar_new, y, Ξ_y_new, Prediction
 
                 for i in Ig
 
-                    add_to_expression!(ex, Pmax[i]*x1["($i, $t)"], m_master_warm[:u][i, t])
-                    add_to_expression!(ex, Pmin[i]*x2["($i, $t)"], m_master_warm[:u][i, t])
+                    add_to_expression!(ex, Pmax[i]*x1["($i, $t)"], m_master_aux[:u][i, t])
+                    add_to_expression!(ex, Pmin[i]*x2["($i, $t)"], m_master_aux[:u][i, t])
 
                     if t == 1
 
                         add_to_expression!(ex, RU[i]*u0[i]*x5["($i, $t)"] + p0[i]*x5["($i, $t)"])
-                        add_to_expression!(ex, Pmax[i]*x5["($i, $t)"], m_master_warm[:v][i, t])
+                        add_to_expression!(ex, Pmax[i]*x5["($i, $t)"], m_master_aux[:v][i, t])
 
-                        add_to_expression!(ex, RD[i]*x6["($i, $t)"], m_master_warm[:u][i, t])
-                        add_to_expression!(ex, Pmax[i]*x6["($i, $t)"], m_master_warm[:w][i, t])
+                        add_to_expression!(ex, RD[i]*x6["($i, $t)"], m_master_aux[:u][i, t])
+                        add_to_expression!(ex, Pmax[i]*x6["($i, $t)"], m_master_aux[:w][i, t])
                         add_to_expression!(ex, -p0[i]*x6["($i, $t)"])
 
                     else
-                        add_to_expression!(ex, RU[i]*x3["($i, $t)"], m_master_warm[:u][i, t-1])
-                        add_to_expression!(ex, Pmax[i]*x3["($i, $t)"], m_master_warm[:v][i, t])
+                        add_to_expression!(ex, RU[i]*x3["($i, $t)"], m_master_aux[:u][i, t-1])
+                        add_to_expression!(ex, Pmax[i]*x3["($i, $t)"], m_master_aux[:v][i, t])
 
-                        add_to_expression!(ex, RD[i]*x4["($i, $t)"], m_master_warm[:u][i, t])
-                        add_to_expression!(ex, Pmax[i]*x4["($i, $t)"], m_master_warm[:w][i, t])
+                        add_to_expression!(ex, RD[i]*x4["($i, $t)"], m_master_aux[:u][i, t])
+                        add_to_expression!(ex, Pmax[i]*x4["($i, $t)"], m_master_aux[:w][i, t])
                     end
                 end
             end
 
-            con = @constraint(m_master_warm, ex - δ*m_master_warm[:λ] + γ ≤ m_master_warm[:μ][n] + m_master_warm[:θ])
+            con = @constraint(m_master_aux, ex - δ*m_master_aux[:λ] + γ ≤ m_master_aux[:μ][n] + m_master_aux[:θ])
 
             push!(cuts_warm["$n"], con)
 
@@ -1198,22 +1197,28 @@ function warm_start_solution_Benders(Data, z, zstar_new, y, Ξ_y_new, Prediction
     end
 
     val, time_ = @timed(begin
-        optimize!(m_master_warm)
-        status = termination_status(m_master_warm)
+        optimize!(m_master_aux)
+        status = termination_status(m_master_aux)
         if status != MOI.OPTIMAL
             error("problem $status")
         end
     end)
 
-    u_warm = value.(m_master_warm[:u])
-    v_warm = value.(m_master_warm[:v])
-    w_warm = value.(m_master_warm[:w])
-    λ_warm= value.(m_master_warm[:λ])
+    u_warm = value.(m_master_aux[:u])
+    v_warm = value.(m_master_aux[:v])
+    w_warm = value.(m_master_aux[:w])
+    λ_warm = value.(m_master_aux[:λ])
 
-    μ_warm = [-Inf for n ∈ 1:N]
-    θ_warm = -Inf
+    initial_cuts_warm, idx_warm = initilization_restricted_master_Benders(Data, m_master_warm, z, zstar_new, y, Ξ_y_new, PredictionStar_new, α)
+    optimize!(m_master_warm)
+    status = termination_status(m_master_warm)
+    if status != MOI.OPTIMAL
+        error("problem $status")
+    end
+    μ_warm = value.(m_master_warm[:μ])
+    θ_warm = value(m_master_warm[:θ])
 
-    return u_warm, v_warm, w_warm, λ_warm, μ_warm, θ_warm, objective_value(m_master_warm), time_
+    return u_warm, v_warm, w_warm, λ_warm, μ_warm, θ_warm, objective_value(m_master_aux), time_, initial_cuts_warm, idx_warm
  
 end
 
@@ -1614,7 +1619,6 @@ function Benders_with_warm_start(Data, Ξ_y_new, zstar_new, PredictionStar, ρ_n
     cuts_warm = Dict("$n" => [] for n ∈ sample)
 
     m_master_warm = create_master_problem(Data, ρ_new)
-    initilization_restricted_master_Benders(Data, m_master_warm, z, zstar_new, y, Ξ_y_new, PredictionStar_new, α)
     m_oracle, obj  = create_oracle_problem(Data)
     convergence_warm = false
     Max_iter = 250
@@ -1622,21 +1626,21 @@ function Benders_with_warm_start(Data, Ξ_y_new, zstar_new, PredictionStar, ρ_n
     UB_Benders_warm = Inf
     gap_warm =   Inf
 
-    while ~convergence_warm && iter ≤ Max_iter && #gap_warm ≥ 1e-1
+    while ~convergence_warm && iter ≤ Max_iter && gap_warm ≥ 1e-1
 
         if iter == 1
-            global u_Benders_warm, v_Benders_warm, w_Benders_warm, λ_Benders_warm, μ_Benders_warm, θ_Benders_warm, LB_Benders_warm, time_master_Benders_warm = warm_start_solution_Benders(Data, z, zstar_new, y, Ξ_y_new, PredictionStar_new, ρ_new, α, cuts_Benders)
+            global u_Benders_warm, v_Benders_warm, w_Benders_warm, λ_Benders_warm, μ_Benders_warm, θ_Benders_warm, LB_Benders_warm, time_master_Benders_warm, initial_cuts_warm, idx_warm = warm_start_solution_Benders(Data, m_master_warm, z, zstar_new, y, Ξ_y_new, PredictionStar_new, ρ_new, α, cuts_Benders)
         else                                                                
             global u_Benders_warm, v_Benders_warm, w_Benders_warm, λ_Benders_warm, μ_Benders_warm, θ_Benders_warm, LB_Benders_warm, time_master_Benders_warm = solve_master_problem(m_master_warm)
         end
-        convergence_warm = solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y_new, u_Benders_warm, v_Benders_warm, w_Benders_warm, λ_Benders_warm, μ_Benders_warm, θ_Benders_warm, oracle_dict_warm, zstar_new, PredictionStar_new)
+        convergence_warm = solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y_new, u_Benders_warm, v_Benders_warm, w_Benders_warm, λ_Benders_warm, μ_Benders_warm, θ_Benders_warm, oracle_dict_warm, zstar_new, PredictionStar_new, initial_cuts_warm, idx_warm)
         UB_Benders_warm = minimum([UB_Benders_warm, Upper_Bound(Data, u_Benders_warm, v_Benders_warm, w_Benders_warm, λ_Benders_warm, oracle_dict_warm["ϑ"], α)])
         update_master_Benders(Data, m_master_warm, z, zstar_new, y, oracle_dict_warm, cuts_Benders_warm, cuts_warm)
         total_time_oracle_warm = sum(oracle_dict_warm["time"]["$n"][end] for n ∈ sample)
         cumulative_time_warm += time_master_Benders_warm + total_time_oracle_warm
         total_time_warm = time_master_Benders_warm + total_time_oracle_warm
         println("================================================")
-        println(" Lower Bound: $LB_Benders_new\n") 
+        println(" Lower Bound: $LB_Benders_warm\n") 
         println(" Iteration: $iter")
         println("================================================") 
         push!(LowerBound_warm, LB_Benders_warm)
