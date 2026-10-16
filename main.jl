@@ -1478,19 +1478,8 @@ function Benders_algorithm(Data, Ξ_y, zstar, PredictionStar, ρ, α)
     y = [trunc.(s[:], digits = 2) for s in eachcol(global_residual_scenarios)]
     z = [trunc.(s[:], digits = 2) for s in eachcol(global_contextual_scenarios)]
 
-    y_val = Dict("$n" => [zeros(Tf) for b ∈ collect(1:Tb_renewable)] for n ∈ sample)
-    π = Dict("$n" => Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T) for n ∈ sample)
-    π_s = Dict("$n" => Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T) for n ∈ sample)
-    x1 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T) for n ∈ sample)
-    x2 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T) for n ∈ sample)
-    x3 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T[2:end]) for n ∈ sample)
-    x4 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T[2:end]) for n ∈ sample)
-    x5 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in [1]) for n ∈ sample)
-    x6 = Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in [1]) for n ∈ sample)
-    const_term = Dict("$n" => 0.0 for n ∈ sample)
-    time_oracle = Dict("$n" => 0.0 for n ∈ sample)
 
-    oracle_dict = Dict("y" => y_val, "π" => π, "π_s" => π_s, "x1" => x1, "x2" => x2, "x3" => x3, "x4" => x4, "x5" => x5, "x6" => x6, "const" => const_term, "time" => time_oracle, "ϑ" => zeros(N))
+    oracle_dict = Dict("y" => Dict("$n" => [zeros(Tf) for b ∈ collect(1:Tb_renewable)] for n ∈ sample), "π" => Dict("$n" => Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T) for n ∈ sample), "π_s" => Dict("$n" => Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T) for n ∈ sample), "x1" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T) for n ∈ sample), "x2" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T) for n ∈ sample), "x3" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T[2:end]) for n ∈ sample), "x4" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T[2:end]) for n ∈ sample), "x5" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in [1]) for n ∈ sample), "x6" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in [1]) for n ∈ sample), "const" => Dict("$n" => 0.0 for n ∈ sample), "time" => Dict("$n" => 0.0 for n ∈ sample), "ϑ" => zeros(N))
     cuts_Benders = Dict("$n" => Dict("signatures" => Set{Tuple{Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}},Float64,Float64}}(), "π" => Array{Array{Float64},1}(), "π_s" => Array{Array{Float64},1}(), "y_opt" => Array{Array{Float64},1}(), "const" => Array{Float64,1}()) for n in sample)
     iter = 1
 
@@ -1500,7 +1489,7 @@ function Benders_algorithm(Data, Ξ_y, zstar, PredictionStar, ρ, α)
     cuts = Dict("$n" => [] for n ∈ sample)
 
     m_master = create_master_problem(Data, ρ)
-    initilization_restricted_master_Benders(Data, m_master, z, zstar, y, Ξ_y, PredictionStar, α)
+    initial_cuts, idx = initilization_restricted_master_Benders(Data, m_master, z, zstar, y, Ξ_y, PredictionStar, α)
     m_oracle, obj  = create_oracle_problem(Data)
     convergence = false
     Max_iter = 250
@@ -1512,16 +1501,16 @@ function Benders_algorithm(Data, Ξ_y, zstar, PredictionStar, ρ, α)
     while ~convergence && iter ≤ Max_iter && gap ≥ 5e-2
 
         global u_Benders, v_Benders, w_Benders, λ_Benders, μ_Benders, θ_Benders, LB_Benders, time_master_Benders = solve_master_problem(m_master)
-        convergence = solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y, u_Benders, v_Benders, w_Benders, λ_Benders, μ_Benders, θ_Benders, oracle_dict, zstar, PredictionStar)
+        convergence = solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y, u_Benders, v_Benders, w_Benders, λ_Benders, μ_Benders, θ_Benders, oracle_dict, zstar, PredictionStar, initial_cuts, idx)
         UB_Benders = minimum([UB_Benders, Upper_Bound(Data, u_Benders, v_Benders, w_Benders, λ_Benders, oracle_dict["ϑ"], α)])
         update_master_Benders(Data, m_master, z, zstar, y, oracle_dict, cuts_Benders, cuts)
         total_time_oracle = sum(oracle_dict["time"]["$n"][end] for n ∈ sample)
         cumulative_time += time_master_Benders + total_time_oracle
         total_time = time_master_Benders + total_time_oracle
         println("================================================")
-        println("                                     Benders  ")
-        println("                      Iter= $iter               ")
-        println("================================================")
+        println(" Lower Bound: $LB_Benders\n") 
+        println(" Iteration: $iter")
+        println("================================================") 
         iter +=  1
         push!(LowerBound, LB_Benders)
         push!(UpperBound, UB_Benders)
