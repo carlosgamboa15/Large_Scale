@@ -82,7 +82,7 @@ export Data
         push!(z, [s[:] for s in eachcol(X_lag_b_)])
         push!(Y_b, Y_b_)
         push!(X_lag_b, X_lag_b_)
-        push!(zstar, trunc.(renewable_generation_b[:, end], digits=2))
+        push!(zstar, renewable_generation_b[:, end])
     end
 
     """ Net Power Flow """

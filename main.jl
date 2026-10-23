@@ -53,7 +53,7 @@ function scenarios(Data)
 
         aux = reshape(df_regresion.Target .- forcast,24,Int(length(y_vector)/24))
 
-        push!(errors, [trunc.(s[:], digits=2) for s in eachcol(aux)])
+        push!(errors, [s[:] for s in eachcol(aux)])
 
     end
 
@@ -77,7 +77,7 @@ function forecast(Data, zstar, Models)
             DataFrame(Lag1 = zstar[b_])
         )
 
-        push!(PredictionStar, trunc.(PredictionStar_, digits=2))
+        push!(PredictionStar, PredictionStar_)
 
     end
 
@@ -152,7 +152,7 @@ function uncertainty_support(Data, zstar, errors)
 
     tree = KDTree(permutedims(Z))
 
-    k = 5
+    k = Data.N
 
     idxs, dists = knn(tree,zstar_global,k,true)
 
@@ -260,6 +260,7 @@ function create_oracle_problem(Data)
     @variable(m_oracle, ηpos[b in bus_renewable_generation, t in T], Bin)
     @variable(m_oracle, ηneg[b in bus_renewable_generation, t in T], Bin)
     @constraint(m_oracle, [b in bus_renewable_generation, t in T], ηpos[b, t] + ηneg[b, t] ≤ 1)
+    @constraint(m_oracle, positive_forcast[b in bus_renewable_generation, t in T], ηpos[b, t] + ηneg[b, t] ≥ 0)
     set_optimizer(m_oracle, optimizer_with_attributes(() -> Gurobi.Optimizer(GUROBI_ENV), "OutputFlag" => 0))
     obj = objective_function(m_oracle)
 
@@ -298,41 +299,67 @@ function modify_oracle(Data, m_oracle, obj, y, Ξ_y, n, u ,v, w, λ, PredictionS
     Δpos = @views [Δpos_aux[((b - 1) * Tf + 1):(b * Tf)] for b in 1:Tb_renewable]
     Δneg = @views [Δneg_aux[((b - 1) * Tf + 1):(b * Tf)] for b in 1:Tb_renewable]
 
-    ex = sum(-Δpos[ind_renewable_generation[b]][t] * m_oracle[Symbol("π[$b,$t]")] * m_oracle[:ηpos][b, t] + Δneg[ind_renewable_generation[b]][t] * m_oracle[Symbol("π[$b,$t]")] * m_oracle[:ηneg][b, t] + Δpos[ind_renewable_generation[b]][t] * m_oracle[Symbol("π_s[$b,$t]")] * m_oracle[:ηpos][b, t] - Δneg[ind_renewable_generation[b]][t] * m_oracle[Symbol("π[$b,$t]")] * m_oracle[:ηneg][b, t] - λ*Δpos[ind_renewable_generation[b]][t] * m_oracle[:ηpos][b, t] - λ*Δneg[ind_renewable_generation[b]][t] * m_oracle[:ηpos][b, t] for b ∈ bus_renewable_generation, t ∈ T)
+    ex = sum(m_oracle[Symbol("π[$b,$t]")] *( D[b][t] - PredictionStar[ind_renewable_generation[b]][t] - yproj[ind_renewable_generation[b]][t]) -Δpos[ind_renewable_generation[b]][t] * m_oracle[Symbol("π[$b,$t]")] * m_oracle[:ηpos][b, t] + Δneg[ind_renewable_generation[b]][t] * m_oracle[Symbol("π[$b,$t]")] * m_oracle[:ηneg][b, t] + m_oracle[Symbol("π_s[$b,$t]")] *(PredictionStar[ind_renewable_generation[b]][t] + yproj[ind_renewable_generation[b]][t]) + Δpos[ind_renewable_generation[b]][t] * m_oracle[Symbol("π_s[$b,$t]")] * m_oracle[:ηpos][b, t] - Δneg[ind_renewable_generation[b]][t] * m_oracle[Symbol("π[$b,$t]")] * m_oracle[:ηneg][b, t] - λ*Δpos[ind_renewable_generation[b]][t] * m_oracle[:ηpos][b, t] - λ*Δneg[ind_renewable_generation[b]][t] * m_oracle[:ηpos][b, t] for b ∈ bus_renewable_generation, t ∈ T)
 
+    # ex = sum(m_oracle[Symbol("π[$b,$t]")] * ( D[b][t] - PredictionStar[ind_renewable_generation[b]][t]) - m_oracle[Symbol("π[$b,$t]")] * yproj[ind_renewable_generation[b]][t]  + m_oracle[Symbol("π_s[$b,$t]")] *PredictionStar[ind_renewable_generation[b]][t] + m_oracle[Symbol("π_s[$b,$t]")] *yproj[ind_renewable_generation[b]][t]  for b ∈ bus_renewable_generation, t ∈ T)
     set_objective_function(m_oracle, obj + ex - λ * norm(yproj_aux - y_n, 1))
+
+    # y_opt = @views [yproj[((b - 1) * Tf + 1):(b * Tf)] for b in 1:Tb_renewable]
+    # model = economic_dispatch_problem(Data, u, v, w)
+
+    # for b ∈ bus_renewable_generation, t ∈ T
+
+    #     set_normalized_rhs(model[:π][b, t], D[b][t] - PredictionStar[ind_renewable_generation[b]][t] - y_opt[ind_renewable_generation[b]][t])
+    #     set_normalized_rhs(model[:π_s][b, t], PredictionStar[ind_renewable_generation[b]][t] + y_opt[ind_renewable_generation[b]][t])
+
+    # end
+    # m_oracle = dualize(model; dual_names = DualNames())
+
+    # π, π_s, x1, x2, x3, x4, x5, x6, const_term, obj_aux = dual_vertices(Data, u, v, w, y_opt, PredictionStar)
 
     for t in T
 
-        for b in bus_renewable_generation
+        for b ∈ bus_renewable_generation
 
-            π = m_oracle[Symbol("π[$b,$t]")]
-            π_s = m_oracle[Symbol("π_s[$b,$t]")]
-
-            REG = maximum([PredictionStar[ind_renewable_generation[b]][t] + yproj[ind_renewable_generation[b]][t], 0.0])
-
-            set_objective_coefficient(m_oracle, π, D[b][t] - REG)
-            set_objective_coefficient(m_oracle, π_s, REG)
+            # fix(m_oracle[Symbol("π[$b,$t]")], π["($b, $t)"], force = true)
+            # fix(m_oracle[Symbol("π_s[$b,$t]")], π_s["($b, $t)"], force = true)
+            set_normalized_coefficient(m_oracle[:positive_forcast][b, t], m_oracle[:ηpos][b, t], Δpos[ind_renewable_generation[b]][t])
+            set_normalized_coefficient(m_oracle[:positive_forcast][b, t], m_oracle[:ηneg][b, t],- Δneg[ind_renewable_generation[b]][t])
+            set_normalized_rhs(m_oracle[:positive_forcast][b, t], - PredictionStar[ind_renewable_generation[b]][t] - yproj[ind_renewable_generation[b]][t])
 
         end
+
         for i in Ig
 
             set_objective_coefficient(m_oracle, m_oracle[Symbol("x1[$i,$t]")], Pmax[i]*u[i, t])
             set_objective_coefficient(m_oracle, m_oracle[Symbol("x2[$i,$t]")], Pmin[i]*u[i, t])
+            # fix(m_oracle[Symbol("x1[$i,$t]")], x1["($i, $t)"], force = true)
+            # fix(m_oracle[Symbol("x2[$i,$t]")], x2["($i, $t)"], force = true)
 
             if t == 1
 
                 set_objective_coefficient(m_oracle, m_oracle[Symbol("x5[$i,$t]")], RU[i]*u0[i] + Pmax[i]*v[i, t] + p0[i])
                 set_objective_coefficient(m_oracle, m_oracle[Symbol("x6[$i,$t]")], RD[i]*u[i, t] + Pmax[i]*w[i, t] - p0[i])
+                # fix(m_oracle[Symbol("x5[$i,$t]")], x5["($i, $t)"], force = true)
+                # fix(m_oracle[Symbol("x6[$i,$t]")], x6["($i, $t)"], force = true)
+                
 
             else
 
                 set_objective_coefficient(m_oracle, m_oracle[Symbol("x3[$i,$t]")], RU[i]*u[i, t-1] + Pmax[i]*v[i, t])
                 set_objective_coefficient(m_oracle, m_oracle[Symbol("x4[$i,$t]")], RD[i]*u[i, t] + Pmax[i]*w[i, t])
+                # fix(m_oracle[Symbol("x3[$i,$t]")], x3["($i, $t)"], force = true)
+                # fix(m_oracle[Symbol("x1[$i,$t]")], x4["($i, $t)"], force = true)
 
             end
         end
     end
+
+    # set_optimizer(m_oracle, optimizer_with_attributes(() -> Gurobi.Optimizer(GUROBI_ENV), "OutputFlag" => 0, "Method" => 2, "Crossover" => 0))
+    # optimize!(m_oracle)
+    # termination_status(m_oracle)
+    # objective_value(m_oracle)
+
 
 end
 
@@ -341,6 +368,16 @@ function solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y, u, v, w, λ, μ, 
     N = Data.N
     Tf = Data.Tf
     bus_renewable_generation = Data.bus_renewable_generation
+    RU = Data.RU
+    RD = Data.RD
+    Pmin = Data.Pmin
+    Pmax = Data.Pmax
+    number_of_generators = Data.Ig
+
+
+    p0 = zeros(number_of_generators)
+    u0 = zeros(number_of_generators)
+
     T = collect(1:Tf)   
     a = Ξ_y[:,1]
     b = Ξ_y[:,2]
@@ -387,22 +424,22 @@ function solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y, u, v, w, λ, μ, 
 
                 oracle_dict["x1"]["$n"]["($i, $t)"] = value(m_oracle[Symbol("x1[$i,$t]")])
                 oracle_dict["x2"]["$n"]["($i, $t)"] = value(m_oracle[Symbol("x2[$i,$t]")])
-                const_term_x1 += get(obj_funcion.aff.terms, m_oracle[Symbol("x1[$i,$t]")], 0.0) * value(m_oracle[Symbol("x1[$i,$t]")])
-                const_term_x2 += get(obj_funcion.aff.terms, m_oracle[Symbol("x2[$i,$t]")], 0.0) * value(m_oracle[Symbol("x2[$i,$t]")])
+                const_term_x1 += Pmax[i]*u[i, t]  * value(m_oracle[Symbol("x1[$i,$t]")])
+                const_term_x2 += Pmin[i]*u[i, t]  * value(m_oracle[Symbol("x2[$i,$t]")])
 
                 if t == 1
 
                     oracle_dict["x5"]["$n"]["($i, $t)"] = value(m_oracle[Symbol("x5[$i,$t]")])
                     oracle_dict["x6"]["$n"]["($i, $t)"] = value(m_oracle[Symbol("x6[$i,$t]")])
-                    const_term_x5 += get(obj_funcion.aff.terms, m_oracle[Symbol("x5[$i,$t]")], 0.0) * value(m_oracle[Symbol("x5[$i,$t]")])
-                    const_term_x6 += get(obj_funcion.aff.terms, m_oracle[Symbol("x6[$i,$t]")], 0.0) * value(m_oracle[Symbol("x6[$i,$t]")])
+                    const_term_x5 += (RU[i]*u0[i] + Pmax[i]*v[i, t] + p0[i]) * value(m_oracle[Symbol("x5[$i,$t]")])
+                    const_term_x6 += (RD[i]*u[i, t] + Pmax[i]*w[i, t] - p0[i]) * value(m_oracle[Symbol("x6[$i,$t]")])
 
                 else
 
                     oracle_dict["x3"]["$n"]["($i, $t)"] = value(m_oracle[Symbol("x3[$i,$t]")])
                     oracle_dict["x4"]["$n"]["($i, $t)"] = value(m_oracle[Symbol("x4[$i,$t]")])
-                    const_term_x3 += get(obj_funcion.aff.terms, m_oracle[Symbol("x3[$i,$t]")], 0.0) * value(m_oracle[Symbol("x3[$i,$t]")])
-                    const_term_x4 += get(obj_funcion.aff.terms, m_oracle[Symbol("x4[$i,$t]")], 0.0) * value(m_oracle[Symbol("x4[$i,$t]")])
+                    const_term_x3 += (RU[i]*u[i, t-1] + Pmax[i]*v[i, t])* value(m_oracle[Symbol("x3[$i,$t]")])
+                    const_term_x4 += (RD[i]*u[i, t] + Pmax[i]*w[i, t])* value(m_oracle[Symbol("x4[$i,$t]")])
 
                 end
 
@@ -413,12 +450,7 @@ function solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y, u, v, w, λ, μ, 
         oracle_dict["const"]["$n"] = copy(objective_value(m_oracle) - (const_term_x1 + const_term_x2 + const_term_x3 + const_term_x4 + const_term_x5 + const_term_x6) - λ*norm(y_opt - y[n],1))
         oracle_dict["time"]["$n"] = time_
 
-        if n ∈ idx
-            ϑ_ = value(constraint_object(initial_cuts["$n"]).func) + θ - constraint_object(initial_cuts["$n"]).set.upper 
-            oracle_dict["ϑ"][n] = maximum([ϑ_, objective_value(m_oracle) - λ*norm(zstar_global - z[n],1)])
-        else
-            oracle_dict["ϑ"][n] = objective_value(m_oracle) - λ*norm(zstar_global - z[n],1)
-        end
+        oracle_dict["ϑ"][n] = objective_value(m_oracle) - λ*norm(zstar_global - z[n],1)
 
         if viol ≥ -1e-2
             violation[n] = false
@@ -639,7 +671,7 @@ function update_master_Benders(Data, m_master, z, zstar, y, oracle_dict, cuts_Be
             push!(cuts_Benders["$n"]["π"], round.(values(π); digits = 8))
             push!(cuts_Benders["$n"]["π_s"], round.(values(π_s); digits = 8))
             push!(cuts_Benders["$n"]["y_opt"], vcat(y_opt...))
-            push!(cuts_Benders["$n"]["const"], γ - sum(π["($b, $t)"]*(D[b][t] - maximum([PredictionStar[ind_renewable_generation[b]][t] + y_opt[ind_renewable_generation[b]][t], 0.0])) + π_s["($b, $t)"]*maximum([PredictionStar[ind_renewable_generation[b]][t] + y_opt[ind_renewable_generation[b]][t], 0.0]) for b ∈ bus_renewable_generation, t ∈ T))
+            push!(cuts_Benders["$n"]["const"], γ - sum(π["($b, $t)"]*(D[b][t] - PredictionStar[ind_renewable_generation[b]][t] - y_opt[ind_renewable_generation[b]][t]) + π_s["($b, $t)"]*(PredictionStar[ind_renewable_generation[b]][t] + y_opt[ind_renewable_generation[b]][t]) for b ∈ bus_renewable_generation, t ∈ T))
 
             cut = @constraint(m_master, ex - δ*m_master[:λ] + γ ≤ m_master[:μ][n] + m_master[:θ])
             push!(cuts["$n"], cut)
@@ -711,7 +743,7 @@ function initilization_restricted_master_CCG(Data, m_master, z, zstar, y, errors
 
         n = idx[k]
 
-        yproj = trunc.(clamp.(y[n], a, b), digits = 2)
+        yproj = clamp.(y[n], a, b)
 
         norm_l1_z = norm(zstar_global - z[n], 1)
         norm_l1_y = norm(yproj - y[n], 1)
@@ -846,6 +878,17 @@ function dual_vertices(Data, u, v, w, y_opt, PredictionStar)
     D = Data.D
     Tf = Data.Tf
     T = collect(1:Tf)
+    RU = Data.RU
+    RD = Data.RD
+    Pmin = Data.Pmin
+    Pmax = Data.Pmax
+    number_of_generators = Data.Ig
+
+
+    p0 = zeros(number_of_generators)
+    u0 = zeros(number_of_generators)
+
+
     number_of_generators = Data.Ig
     Ig = collect(1:number_of_generators)
     bus_renewable_generation = Data.bus_renewable_generation
@@ -894,22 +937,23 @@ function dual_vertices(Data, u, v, w, y_opt, PredictionStar)
 
             x1["($i, $t)"] = value(m_oracle[Symbol("x1[$i,$t]")])
             x2["($i, $t)"] = value(m_oracle[Symbol("x2[$i,$t]")])
-            const_term_x1 = get(obj_funcion.terms, m_oracle[Symbol("x1[$i,$t]")], 0.0) * value(m_oracle[Symbol("x1[$i,$t]")])
-            const_term_x2 = get(obj_funcion.terms, m_oracle[Symbol("x2[$i,$t]")], 0.0) * value(m_oracle[Symbol("x2[$i,$t]")])
+            const_term_x1 += Pmax[i]*u[i, t] * value(m_oracle[Symbol("x1[$i,$t]")])
+            const_term_x2 += Pmin[i]*u[i, t] * value(m_oracle[Symbol("x2[$i,$t]")])
 
             if t == 1
 
                 x5["($i, $t)"] = value(m_oracle[Symbol("x5[$i,$t]")])
                 x6["($i, $t)"] = value(m_oracle[Symbol("x6[$i,$t]")])
-                const_term_x5 = get(obj_funcion.terms, m_oracle[Symbol("x5[$i,$t]")], 0.0) * value(m_oracle[Symbol("x5[$i,$t]")])
-                const_term_x6 = get(obj_funcion.terms, m_oracle[Symbol("x6[$i,$t]")], 0.0) * value(m_oracle[Symbol("x6[$i,$t]")])
+                const_term_x5 += (RU[i]*u0[i] + Pmax[i]*v[i, t] + p0[i]) * value(m_oracle[Symbol("x5[$i,$t]")])
+                const_term_x6 += (RD[i]*u[i, t] + Pmax[i]*w[i, t] - p0[i]) * value(m_oracle[Symbol("x6[$i,$t]")])
 
             else
 
                 x3["($i, $t)"] = value(m_oracle[Symbol("x3[$i,$t]")])
                 x4["($i, $t)"] = value(m_oracle[Symbol("x4[$i,$t]")])
-                const_term_x3 = get(obj_funcion.terms, m_oracle[Symbol("x3[$i,$t]")], 0.0) * value(m_oracle[Symbol("x3[$i,$t]")])
-                const_term_x4 = get(obj_funcion.terms, m_oracle[Symbol("x4[$i,$t]")], 0.0) * value(m_oracle[Symbol("x4[$i,$t]")])
+                const_term_x3 += (RU[i]*u[i, t-1] + Pmax[i]*v[i, t])* value(m_oracle[Symbol("x3[$i,$t]")])
+                const_term_x4 += (RD[i]*u[i, t] + Pmax[i]*w[i, t]) * value(m_oracle[Symbol("x4[$i,$t]")])
+
 
             end
 
@@ -920,7 +964,7 @@ function dual_vertices(Data, u, v, w, y_opt, PredictionStar)
 
     const_term = objective_value(m_oracle) - (const_term_x1 + const_term_x2 + const_term_x3 + const_term_x4 + const_term_x5 + const_term_x6)
 
-    return π, π_s, x1, x2, x3, x4, x5, x6, const_term
+    return π, π_s, x1, x2, x3, x4, x5, x6, const_term, objective_value(m_oracle)
 end
 
 function initilization_restricted_master_Benders(Data, m_master, z, zstar, y, Ξ_y, PredictionStar, α)
@@ -930,7 +974,8 @@ function initilization_restricted_master_Benders(Data, m_master, z, zstar, y, Ξ
     RD = Data.RD
     Pmin = Data.Pmin
     Pmax = Data.Pmax
-    Tf = Data.Tf    
+    Tf = Data.Tf   
+    number_of_generators = Data.Ig 
 
     # Ignitial state
     p0 = zeros(number_of_generators)
@@ -939,49 +984,26 @@ function initilization_restricted_master_Benders(Data, m_master, z, zstar, y, Ξ
     a = Ξ_y[:,1]
     b = Ξ_y[:,2]
 
-    m = ceil(Int, N*α)
-
-    dist = zeros(N)
-
-    for n in 1:N
-
-        dz = norm(z[n] - vcat(zstar...), 1)
-
-        dy = 0.0
-        for d in eachindex(a)
-            if y[n][d] < a[d]
-                dy += a[d] - y[n][d]
-            elseif y[n][d] > b[d]
-                dy += y[n][d] - b[d]
-            end
-        end
-
-        dist[n] = dz + dy
-
-    end
-
-    idx = sortperm(dist)
-
     y_list = []
+    idx = collect(1:N)
 
-    for k in 1:m
+    for  n ∈ 1:N
 
-        n = idx[k]
-
-        yproj = trunc.(clamp.(y[n], a, b), digits = 2)
+        yproj = clamp.(y[n], a, b)
         push!(y_list, @views [yproj[((b - 1) * Tf + 1):(b * Tf)] for b in 1:length(bus_renewable_generation)]) 
 
     end   
 
-    u, v, w = deterministic_equivalent_problem(Data, y_list, PredictionStar)
+    y_mean = mean(collect(y_list))
+
+    u , v , w = deterministic_equivalent_problem(Data, [y_mean], PredictionStar)
 
     initial_cuts = Dict{String, Any}()
 
-    for k ∈ 1:m 
+    for n ∈ 1:N
 
-        n = idx[k]
 
-        yproj = y_list[k]
+        yproj = y_list[n]
 
         π, π_s, x1, x2, x3, x4, x5, x6, const_term = dual_vertices(Data, u, v, w, yproj, PredictionStar)
 
@@ -1025,7 +1047,7 @@ function initilization_restricted_master_Benders(Data, m_master, z, zstar, y, Ξ
 
     end
 
-    return initial_cuts, idx[1:m]
+    return initial_cuts, idx
  
 end
 
@@ -1325,7 +1347,7 @@ function CVaR(α, vec)
     @constraint(model, [s in S],
     z[s] >= vec[s] - θ)
 
-    @objective(model, Min, θ + (1/(1-α)) * sum(p[s] * z[s] for s in S))
+    @objective(model, Min, θ + (1/α) * sum(p[s] * z[s] for s in S))
 
     optimize!(model)
     status = termination_status(model)
@@ -1361,7 +1383,7 @@ function Upper_Bound(Data, u, v, w, λ, vec, α)
     Csu = Data.Csu
     Csd = Data.Csd
 
-    UB = sum(Cu[i]*u[i, t] for i in Ig, t in T) + sum(Csu[i]*v[i, t] for i in Ig, t in T) +  sum(Csd[i]*w[i, t] for i in Ig, t in T) + ρ*λ + CVaR(1-α, vec)
+    UB = sum(Cu[i]*u[i, t] for i in Ig, t in T) + sum(Csu[i]*v[i, t] for i in Ig, t in T) +  sum(Csd[i]*w[i, t] for i in Ig, t in T) + ρ*λ + CVaR(α, vec)
 
     return UB
 
@@ -1395,8 +1417,8 @@ function CCG_algorithm(Data, errors, Ξ_y, zstar, PredictionStar, ρ, α)
         end
     end
 
-    y = [trunc.(s[:], digits = 2) for s in eachcol(global_residual_scenarios)]
-    z = [trunc.(s[:], digits = 2) for s in eachcol(global_contextual_scenarios)]
+    y = [s[:] for s in eachcol(global_residual_scenarios)]
+    z = [s[:] for s in eachcol(global_contextual_scenarios)]
 
     y_val = Dict("$n" => [zeros(Tf) for b ∈ collect(1:Tb_renewable)] for n ∈ sample)
     π = Dict("$n" => Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T) for n ∈ sample)
@@ -1445,7 +1467,7 @@ function Benders_algorithm(Data, Ξ_y, zstar, PredictionStar, ρ, α)
 
     # Trimming parameters
 
-    α = 0.1
+    α = 0.2
     ρ = 1.1*critical_radius(Data, errors, Ξ_y, α, zstar) 
 
 
@@ -1475,8 +1497,8 @@ function Benders_algorithm(Data, Ξ_y, zstar, PredictionStar, ρ, α)
         end
     end
 
-    y = [trunc.(s[:], digits = 2) for s in eachcol(global_residual_scenarios)]
-    z = [trunc.(s[:], digits = 2) for s in eachcol(global_contextual_scenarios)]
+    y = [s[:] for s in eachcol(global_residual_scenarios)]
+    z = [s[:] for s in eachcol(global_contextual_scenarios)]
 
 
     oracle_dict = Dict("y" => Dict("$n" => [zeros(Tf) for b ∈ collect(1:Tb_renewable)] for n ∈ sample), "π" => Dict("$n" => Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T) for n ∈ sample), "π_s" => Dict("$n" => Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T) for n ∈ sample), "x1" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T) for n ∈ sample), "x2" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T) for n ∈ sample), "x3" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T[2:end]) for n ∈ sample), "x4" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T[2:end]) for n ∈ sample), "x5" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in [1]) for n ∈ sample), "x6" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in [1]) for n ∈ sample), "const" => Dict("$n" => 0.0 for n ∈ sample), "time" => Dict("$n" => 0.0 for n ∈ sample), "ϑ" => zeros(N))
@@ -1490,6 +1512,8 @@ function Benders_algorithm(Data, Ξ_y, zstar, PredictionStar, ρ, α)
 
     m_master = create_master_problem(Data, ρ)
     initial_cuts, idx = initilization_restricted_master_Benders(Data, m_master, z, zstar, y, Ξ_y, PredictionStar, α)
+    # initial_cuts, idx = [], []
+    # @constraint(m_master, m_master[:θ] ≥ - 1e10)
     m_oracle, obj  = create_oracle_problem(Data)
     convergence = false
     Max_iter = 250
@@ -1498,7 +1522,7 @@ function Benders_algorithm(Data, Ξ_y, zstar, PredictionStar, ρ, α)
 
     gap = Inf
 
-    while ~convergence && iter ≤ Max_iter && gap ≥ 5e-2
+    while ~convergence && iter ≤ Max_iter  #&& gap ≥ 5e-2
 
         global u_Benders, v_Benders, w_Benders, λ_Benders, μ_Benders, θ_Benders, LB_Benders, time_master_Benders = solve_master_problem(m_master)
         convergence = solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y, u_Benders, v_Benders, w_Benders, λ_Benders, μ_Benders, θ_Benders, oracle_dict, zstar, PredictionStar, initial_cuts, idx)
@@ -1509,6 +1533,10 @@ function Benders_algorithm(Data, Ξ_y, zstar, PredictionStar, ρ, α)
         total_time = time_master_Benders + total_time_oracle
         println("================================================")
         println(" Lower Bound: $LB_Benders\n") 
+        println(" Upper Bound: $UB_Benders\n") 
+        println(" λ: $λ_Benders\n") 
+        println(" θ: $θ_Benders\n") 
+        println(" μ: $(μ_Benders')\n") 
         println(" Iteration: $iter")
         println("================================================") 
         iter +=  1
@@ -1559,7 +1587,7 @@ function Benders_with_warm_start(Data, Ξ_y_new, zstar_new, PredictionStar, ρ_n
 
     # New context
     ϵ = 0.1
-    zstar_new_ = trunc.(vcat(zstar...) .+ (rand(length(vcat(zstar...))) .- 0.5) .* (2 * ϵ), digits=2)
+    zstar_new_ = vcat(zstar...) .+ (rand(length(vcat(zstar...))) .- 0.5) .* (2 * ϵ)
     zstar_new = @views [zstar_new_[((b - 1) * Tf + 1):(b * Tf)] for b in 1:length(bus_renewable_generation)]
 
     Ξ_y_new = uncertainty_support(Data, zstar_new, errors)
@@ -1594,8 +1622,8 @@ function Benders_with_warm_start(Data, Ξ_y_new, zstar_new, PredictionStar, ρ_n
         end
     end
 
-    y = [trunc.(s[:], digits = 2) for s in eachcol(global_residual_scenarios)]
-    z = [trunc.(s[:], digits = 2) for s in eachcol(global_contextual_scenarios)]
+    y = [s[:] for s in eachcol(global_residual_scenarios)]
+    z = [s[:] for s in eachcol(global_contextual_scenarios)]
 
     oracle_dict_warm = Dict("y" => Dict("$n" => [zeros(Tf) for b ∈ collect(1:Tb_renewable)] for n ∈ sample), "π" => Dict("$n" => Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T) for n ∈ sample), "π_s" => Dict("$n" => Dict("($b, $t)" => 0.0  for b in bus_renewable_generation, t in T) for n ∈ sample), "x1" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T) for n ∈ sample), "x2" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T) for n ∈ sample), "x3" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T[2:end]) for n ∈ sample), "x4" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in T[2:end]) for n ∈ sample), "x5" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in [1]) for n ∈ sample), "x6" => Dict("$n" => Dict("($i, $t)" => 0.0 for i in Ig, t in [1]) for n ∈ sample), "const" => Dict("$n" => 0.0 for n ∈ sample), "time" => Dict("$n" => 0.0 for n ∈ sample), "ϑ" => zeros(N))
     cuts_Benders_warm = Dict("$n" => Dict("signatures" => Set{Tuple{Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}}, Tuple{Vararg{Float64}},Float64,Float64}}(), "π" => Array{Array{Float64},1}(), "π_s" => Array{Array{Float64},1}(), "y_opt" => Array{Array{Float64},1}(), "const" => Array{Float64,1}()) for n in sample)
@@ -1691,13 +1719,20 @@ function Benders_with_warm_start(Data, Ξ_y_new, zstar_new, PredictionStar, ρ_n
    
 end
 
-initial_iter = 10
+LowerBound_dict = load( joinpath(@__DIR__, "results", "LowerBound.jld2"))
+UpperBound_dict = load( joinpath(@__DIR__, "results", "UpperBound.jld2"))
+LowerBound = LowerBound_dict["LowerBound"]
+UpperBound = UpperBound_dict["UpperBound"]
+
+initial_iter = 50
 step = 2
 
-xmin, xmax = initial_iter, length(LowerBound_new)
-ymin, ymax = LowerBound_new[initial_iter]/1e5-10, UpperBound_new[initial_iter]/1e5
+xmin, xmax = initial_iter, length(LowerBound)
+ymin, ymax = LowerBound[initial_iter]/1e5-10, UpperBound[initial_iter]/1e5
+ymin, ymax = LowerBound[initial_iter]/1e5, LowerBound[end]/1e5
 
-plot(collect(initial_iter:step:length(LowerBound_new)), LowerBound_new[initial_iter:step:end]/1e5, 
+
+plot(collect(initial_iter:step:length(LowerBound)), LowerBound[initial_iter:step:end]/1e5, 
     lw = 2, 
     xlims = (xmin, xmax),
     ylims = (ymin, ymax),
@@ -1708,16 +1743,16 @@ plot(collect(initial_iter:step:length(LowerBound_new)), LowerBound_new[initial_i
     top_margin = 12mm,    
     left_margin = 10mm )
 annotate!(
-    xmin - 5,                          # Posición X: alineado con el borde izquierdo del eje
-    ymax,                   # Posición Y: justo por encima del valor máximo del eje
-    text("x "*L"10^5",           # Texto en LaTeX
-         :left,                    # Alineación horizontal
-         :center,                  # Alineación vertical
-         rotation = 0,            # <--- ESTO LO PONE EN POSICIÓN VERTICAL
-         10                        # Tamaño de la fuente
+    xmin - 5,                        
+    ymax,                   
+    text("x "*L"10^5",           
+         :left,                    
+         :center,               
+         rotation = 0,          
+         10                       
     )
 )
-plot!(collect(initial_iter:step:length(UpperBound_new)), UpperBound_new[initial_iter:step:end]/1e5, lw = 2, label = L"UB")
+plot!(collect(initial_iter:step:length(UpperBound)), UpperBound[initial_iter:step:end]/1e5, lw = 2, label = L"UB")
 
 
 
@@ -1913,8 +1948,11 @@ n = 10
 val = [value(constraint_object(cuts_new["$n"][i]).func) + θ_Benders_new - constraint_object(cuts_new["$n"][i]).set.upper for i ∈ eachindex(cuts_new["$n"])]
 val_initial = [value(constraint_object(initial_cuts["$n"]).func) + θ_Benders_new - constraint_object(initial_cuts["$n"]).set.upper ]
 
-trunc(maximum(vcat(val, val_initial)), digits = 7) == trunc(oracle_dict_new["ϑ"][n], digits = 7)
+path  = joinpath(@__DIR__, "results", "cuts_warm.jld2")
+jldsave(path;  cuts_warm)
 
- maximum(val) < θ_Benders_new 
- 
- CVaR(1-α, oracle_dict_new["ϑ"]) 
+write_to_file(m_master_warm, joinpath(@__DIR__, "results", "m_master_warm.mps"))
+
+sort(findall([oracle_dict_new["ϑ"][n] for n in sample] .!= oracle_dict_new["ϑ"][1])) ==sort(idx_new)
+
+oracle_dict_new["ϑ"][87]
