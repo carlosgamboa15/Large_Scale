@@ -43,7 +43,7 @@ export Data
     renewable_generation_profile = Matrix(CSV.read(joinpath(pwd(), syst, "renewable_generation_profile.csv"), DataFrame;header=true))[:,2:end]
     S,  = size(renewable_generation_profile)
     maximum_renewable_generation = CSV.read(joinpath(pwd(), syst, "maximum_renewable_generation.csv"), DataFrame;header=false)
-    bus_renewable_generation = maximum_renewable_generation[:,1]
+    bus_renewable_generation = [maximum_renewable_generation[:,1][4]]
     N = 10 # Number of scenarios
 
     Tf = 24 
