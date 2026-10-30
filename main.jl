@@ -372,8 +372,6 @@ function solve_oracle_problem(Data, m_oracle, obj, z, y, Ξ_y, u, v, w, λ, μ, 
 
     violation = [true for n ∈ 1:N]
 
-    m_oracle, obj  = create_oracle_problem(Data)
-
     for n ∈ 1:N
     
         val, time_ = @timed(begin
